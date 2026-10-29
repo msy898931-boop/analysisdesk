@@ -1,0 +1,18 @@
+# Render blueprint for AnalysisDesk.
+#
+# Free plan note: the instance sleeps after ~15 minutes idle and cold-starts on
+# the next request. Nothing is persisted, and the app keeps no state on disk
+# (caches live in memory only), so a cold start costs latency, not correctness.
+services:
+  - type: web
+    name: analysisdesk
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Declared with no value so the key is set in the dashboard, never in git.
+      # Without it the app still works: it falls back to the computed explanation.
+      - key: GROQ_API_KEY
+        sync: false

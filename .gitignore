@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+.DS_Store
+
+# runtime state: logs, pid files, local env
+.runtime/
+
+# agent working notes (local only)
+.openhands/
