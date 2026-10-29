@@ -68,6 +68,34 @@ across 5 timeframes (5m → 1wk).
 مكشوف للشبكة، فلا `.env` ولا `.runtime/` يُوصلان من الخارج.
 
 ---
+---
+
+## النشر / Deploying
+
+الملفات جاهزة ومُختبرة: `Dockerfile`، `render.yaml`، `.dockerignore`، `.env.example`.
+التطبيق **ما يكتب شي على القرص** (الذاكرة فقط)، فما يحتاج قرصاً دائماً.
+
+**الطريق الأسرع (Render):**
+
+1. أنشئ ريبو فارغ على GitHub باسم `analysisdesk`.
+2. ادفع الكود:
+   ```bash
+   git remote add origin https://github.com/<user>/analysisdesk.git
+   GIT_TERMINAL_PROMPT=0 git push https://${GITHUB_TOKEN}@github.com/<user>/analysisdesk.git master
+   ```
+3. في Render: **New → Blueprint** → اختر الريبو. `render.yaml` يبني الباقي.
+4. أضف `GROQ_API_KEY` في Environment (اختياري: بدونه يرجع للتفسير المحسوب).
+
+**بـDocker محلياً:**
+```bash
+docker build -t analysisdesk .
+docker run -p 8080:8080 -e PORT=8080 -e GROQ_API_KEY=... analysisdesk
+```
+
+**ملاحظة الخطة المجانية:** النوم بعد ~١٥ دقيقة خمول، ويصحو مع أول طلب
+(cold start). لأن ما في حالة على القرص، الصحوة تكلّف **زمن لا صحة**.
+
+---
 ## المبدأ الأساسي / The core principle
 
 هذه المنصّة مبنية على عكس ما تفعله المواقع التي تعد بأرباح مضمونة:
