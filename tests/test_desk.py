@@ -722,3 +722,65 @@ def test_rule_sentences_use_the_shared_precision():
     for r in sig["rules"]:
         for blob in (r["detail_en"], r["detail_ar"]):
             assert not re.search(r"\d\.\d{5,}", blob), f"tail in {r['name']}: {blob}"
+
+
+# ---------------------------------------------------------------- deploy watch
+
+def _load_watch():
+    """Import the watchdog scripts (they live outside the package on purpose)."""
+    import importlib.util
+    from pathlib import Path
+    mods = {}
+    for name in ("check_deploy", "hours_audit"):
+        path = Path(__file__).resolve().parent.parent / "scripts" / f"{name}.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mods[name] = mod
+    return mods
+
+
+_WATCH = _load_watch()
+
+
+def test_watch_reads_sleep_without_waking():
+    """/robots.txt is the one probe that observes without intervening.
+
+    Render answers it itself while the service is spun down; a 404 JSON body
+    means FastAPI answered, so the app is awake. Anything else must be reported
+    as unknown, never guessed as awake.
+    """
+    classify = _WATCH["check_deploy"].classify
+    assert classify(404, '{"detail":"Not Found"}') == "awake"
+    assert classify(200, "User-agent: *\nDisallow: /\n") == "asleep"
+    assert classify(200, "<html>hi</html>") == "unknown"
+    assert classify(None, "") == "unknown"
+
+
+def test_watch_never_reports_failure_as_all_clear():
+    """A failed read says 'unknown', and an unknown is not a pass."""
+    verdict = _WATCH["check_deploy"].verdict
+    assert verdict({"state": "asleep", "healthy": None})[0] is True
+    assert verdict({"state": "awake", "healthy": True})[0] is True
+    assert verdict({"state": "awake", "healthy": False})[0] is False
+    ok, reason = verdict({"state": "unknown", "healthy": None})
+    assert ok is False and "never completed" in reason
+
+
+def test_hours_audit_flags_the_two_service_case():
+    """750 h is per workspace: a second always-on Free service exhausts it."""
+    audit = _WATCH["hours_audit"].audit
+    one = audit([{"state": "awake"}] * 40, services=1)
+    two = audit([{"state": "awake"}] * 40, services=2)
+    assert one["projected"] < 750 < two["projected"]
+    assert two["headroom"] < 0 and "OVER" in two["verdict"]
+    # A service that mostly sleeps is cheap.
+    sleepy = audit([{"state": "asleep"}] * 40, services=1)
+    assert sleepy["projected"] == 0 and sleepy["headroom"] == 750
+
+
+def test_hours_audit_refuses_to_guess_from_nothing():
+    """No usable readings must not become a reassuring projection."""
+    report = _WATCH["hours_audit"].audit([{"state": "unknown"}] * 10, services=1)
+    assert report["projected"] is None
+    assert "no usable readings" in report["verdict"]

@@ -1,0 +1,95 @@
+name: deploy-watch
+
+# Watch the deployed service without changing it.
+#
+# The probe reads /robots.txt, which Render answers itself while a Free service
+# is spun down. That reply never reaches the app and never wakes it, so this job
+# costs zero instance hours. Probing /api/health on a schedule would wake the
+# service every 30 minutes and burn the 750-hour monthly allowance -- the check
+# would destroy the thing it measures.
+#
+# Sleeping is normal on the free plan, so it is NOT alerted. The job alerts only
+# when the state cannot be determined, or when the app is awake but unhealthy.
+# Silence is never reported as an all-clear.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_alert:
+        description: "Send a test alert through every configured channel"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: deploy-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore the reading log
+        uses: actions/cache/restore@v4
+        with:
+          path: .watchdog
+          key: watchdog-${{ github.run_id }}
+          restore-keys: watchdog-
+
+      - name: Probe the deployment
+        id: probe
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          mkdir -p .watchdog
+          python3 scripts/check_deploy.py --log .watchdog/readings.jsonl --json \
+            > .watchdog/last.json || echo "probe reported a problem"
+          cat .watchdog/last.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d = json.load(open(".watchdog/last.json"))
+          print(f"state={d['state']}")
+          print(f"ok={'true' if d['ok'] else 'false'}")
+          print(f"reason={d['reason']}")
+          PY
+
+      - name: Save the reading log
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .watchdog
+          key: watchdog-${{ github.run_id }}
+
+      - name: Weekly usage digest
+        if: github.event_name == 'schedule' && vars.FREE_SERVICES != ''
+        continue-on-error: true
+        run: |
+          [ "$(date -u +%u)" = "1" ] || exit 0   # Mondays only
+          python3 scripts/hours_audit.py --log .watchdog/readings.jsonl \
+            --services "${FREE_SERVICES}"
+
+      - name: Alert on a real problem
+        if: steps.probe.outputs.ok != 'true' || inputs.force_alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 scripts/alert.py open \
+            --state "${{ steps.probe.outputs.state || 'unknown' }}" \
+            --reason "${{ steps.probe.outputs.reason || 'the probe produced no verdict' }}"
+
+      - name: Close the alert once it recovers
+        if: steps.probe.outputs.ok == 'true' && !inputs.force_alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/alert.py close
