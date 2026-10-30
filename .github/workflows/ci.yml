@@ -36,24 +36,40 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        # One source of truth: the runtime deps and the dev tools both live in
+        # pyproject.toml. requirements.txt is kept in step and asserted equal by
+        # a test, so the two cannot quietly diverge.
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov ruff mypy bandit pip-audit
+          pip install -e ".[dev]"
 
       - name: Tests
         # Network tests are deselected: CI must not depend on a third party
         # being up, or a red build would mean "Yahoo was slow", not "we broke it".
-        run: python -m pytest tests/ -q -m "not network" --cov=app --cov-report=term-missing
+        run: python -m pytest tests/ -m "not network" --cov=app --cov-report=term-missing
 
       - name: Lint
         run: ruff check app/ tests/ scripts/
 
       - name: Types
-        run: mypy app/ --ignore-missing-imports
+        run: mypy
 
       - name: Security scan
         run: bandit -q -r app/ scripts/ -ll
 
       - name: Dependency audit
         run: pip-audit -r requirements.txt
+
+  ui:
+    # The card is half the product and none of the Python tests touch it. This
+    # job runs the browser-side helpers under node's own test runner.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: UI unit tests
+        run: node --test web/app.test.mjs

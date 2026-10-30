@@ -1055,3 +1055,569 @@ def test_deterministic_fallback_does_not_credit_a_model(monkeypatch):
     out = asyncio.run(ai.narrate("EURUSD=X", "1h", ind, sig, "en"))
     assert out["source"] == "deterministic"
     assert out["model"] is None
+
+
+# ------------------------------------------- config has one source of truth
+
+def test_requirements_match_pyproject_dependencies():
+    """requirements.txt and pyproject must not drift.
+
+    Two hand-kept copies of one fact is exactly the failure this project keeps
+    finding: they agree until someone edits one. Pin them together here.
+    """
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    data = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+    pyproject = {d.split(">=")[0].split("[")[0].strip().lower()
+                 for d in data["project"]["dependencies"]}
+    reqs = set()
+    for raw in (root / "requirements.txt").read_text("utf-8").splitlines():
+        clean = raw.split("#")[0].strip()
+        if not clean:
+            continue
+        reqs.add(clean.split(">=")[0].split("[")[0].strip().lower())
+    assert pyproject == reqs, f"drift: pyproject-only={pyproject - reqs}, req-only={reqs - pyproject}"
+
+
+def test_pyproject_declares_the_supported_python_floor():
+    """requires-python must match the target the linters and CI use."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    data = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))
+    assert data["project"]["requires-python"] == ">=3.11"
+    assert data["tool"]["ruff"]["target-version"] == "py311"
+    assert data["tool"]["mypy"]["python_version"] == "3.11"
+
+
+# ============================ market.py: every venue and every failure path
+# The market layer is the one place a wrong number could enter the desk, and it
+# talks to four live venues. These drive each path with a canned payload so the
+# parsing rules are pinned without depending on a provider being up.
+
+class _Resp:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _Client:
+    """Stands in for httpx.AsyncClient: a queue of canned responses, async CM."""
+
+    def __init__(self, *responses, calls=None):
+        self._responses = list(responses)
+        self.calls = calls if calls is not None else []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, params=None):
+        self.calls.append((url, params))
+        r = self._responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def _yahoo_payload(n=120, start=1700000000, step=3600, close0=100.0):
+    stamps = [start + i * step for i in range(n)]
+    closes = [close0 + i * 0.1 for i in range(n)]
+    return {"chart": {"result": [{
+        "meta": {"symbol": "EURUSD=X", "currency": "USD", "exchangeName": "CCY",
+                 "shortName": "EUR/USD", "instrumentType": "CURRENCY"},
+        "timestamp": stamps,
+        "indicators": {"quote": [{
+            "open": closes, "high": [c + 0.5 for c in closes],
+            "low": [c - 0.5 for c in closes], "close": closes,
+            "volume": [None] * n,
+        }]},
+    }]}}
+
+
+def test_series_to_frame_and_last_price():
+    from app.market import Candle, Series
+
+    s = Series(symbol="X", currency="USD", exchange="E", interval="1h",
+               candles=[Candle(1, 1, 2, 0, 3, None), Candle(2, 2, 3, 1, 4, None)])
+    assert s.last_price == 4
+    df = s.to_frame()
+    assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert df.index.name == "t" and len(df) == 2
+
+
+def test_cache_put_evicts_the_oldest_entry(monkeypatch):
+    from app.market import Candle, Series
+
+    monkeypatch.setattr(market, "_CACHE_MAX", 2)
+    market._cache.clear()
+    mk = lambda i: (float(i), Series(symbol=str(i), currency="", exchange="",  # noqa: E731
+                                     interval="1h", candles=[Candle(i, 1, 1, 1, 1, None)]))
+    market._cache_put(("a", "1h"), mk(1))
+    market._cache_put(("b", "1h"), mk(2))
+    market._cache_put(("c", "1h"), mk(3))  # evicts "a" (oldest timestamp)
+    assert ("a", "1h") not in market._cache
+    assert ("b", "1h") in market._cache and ("c", "1h") in market._cache
+
+
+def test_fetch_series_rejects_an_unknown_interval():
+    import asyncio
+
+    try:
+        asyncio.run(market.fetch_series("EURUSD=X", "7s"))
+        raise AssertionError("unknown interval should raise")
+    except market.MarketDataError as exc:
+        assert "7s" in str(exc)
+
+
+def test_fetch_series_parses_a_yahoo_payload(monkeypatch):
+    import asyncio
+
+    fake = _Client(_Resp(200, _yahoo_payload(120)))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    s = asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+    assert s.currency == "USD" and s.exchange == "CCY"
+    assert s.short_name == "EUR/USD" and s.instrument_type == "CURRENCY"
+    assert len(s.candles) == 120
+    assert s.candles[0].t == 1700000000
+
+
+def test_fetch_series_reports_a_non_200_loudly(monkeypatch):
+    import asyncio
+
+    fake = _Client(_Resp(503, None))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    try:
+        asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+        raise AssertionError("503 should raise")
+    except market.MarketDataError as exc:
+        assert "503" in str(exc)
+
+
+def test_fetch_series_reports_a_network_error_loudly(monkeypatch):
+    import asyncio
+
+    fake = _Client(market.httpx.ConnectError("boom"))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    try:
+        asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+        raise AssertionError("network error should raise")
+    except market.MarketDataError as exc:
+        assert "network error" in str(exc)
+
+
+def test_fetch_series_reports_an_unreadable_payload(monkeypatch):
+    import asyncio
+
+    fake = _Client(_Resp(200, {"chart": {"result": []}}))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    try:
+        asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+        raise AssertionError("empty result should raise")
+    except market.MarketDataError as exc:
+        assert "unreadable" in str(exc)
+
+
+def test_fetch_series_refuses_too_little_history(monkeypatch):
+    import asyncio
+
+    fake = _Client(_Resp(200, _yahoo_payload(30)))  # under the 60-candle floor
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    try:
+        asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+        raise AssertionError("short history should raise")
+    except market.MarketDataError as exc:
+        assert "not enough history" in str(exc)
+
+
+def test_fetch_series_skips_candles_with_a_null_field(monkeypatch):
+    """A gap in the feed is dropped, never filled with a made-up value."""
+    import asyncio
+
+    payload = _yahoo_payload(80)
+    quote = payload["chart"]["result"][0]["indicators"]["quote"][0]
+    quote["close"][5] = None  # one bad bar
+    fake = _Client(_Resp(200, payload))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    s = asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+    assert len(s.candles) == 79
+
+
+def test_fetch_series_serves_the_second_call_from_cache(monkeypatch):
+    import asyncio
+
+    calls = []
+    fake = _Client(_Resp(200, _yahoo_payload(120)), calls=calls)
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    a = asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+    b = asyncio.run(market.fetch_series("EURUSD=X", "1h"))
+    assert a is b and len(calls) == 1
+
+
+# ---- Kraken (primary spot source) ----
+
+def test_kraken_rejects_a_non_200():
+    import asyncio
+
+    try:
+        asyncio.run(market._kraken_page(_Client(_Resp(502, None)), "PAXGUSD", 60))
+        raise AssertionError("502 should raise")
+    except market.MarketDataError as exc:
+        assert "502" in str(exc)
+
+
+def test_kraken_rejects_an_unreadable_body():
+    import asyncio
+
+    try:
+        asyncio.run(market._kraken_page(_Client(_Resp(200, ValueError("x"))), "PAXGUSD", 60))
+        raise AssertionError("bad json should raise")
+    except market.MarketDataError as exc:
+        assert "unreadable" in str(exc)
+
+
+def test_kraken_surfaces_a_source_error_field():
+    import asyncio
+
+    body = {"error": ["EQuery:Unknown asset pair"], "result": {}}
+    try:
+        asyncio.run(market._kraken_page(_Client(_Resp(200, body)), "NOPE", 60))
+        raise AssertionError("error field should raise")
+    except market.MarketDataError as exc:
+        assert "Unknown asset pair" in str(exc)
+
+
+def test_kraken_reports_an_empty_result():
+    import asyncio
+
+    body = {"error": [], "result": {"last": 123}}
+    try:
+        asyncio.run(market._kraken_page(_Client(_Resp(200, body)), "PAXGUSD", 60))
+        raise AssertionError("no rows should raise")
+    except market.MarketDataError as exc:
+        assert "no candles" in str(exc)
+
+
+# ---- Coinbase (fallback spot source) ----
+
+def test_coinbase_rejects_a_non_200():
+    import asyncio
+
+    try:
+        asyncio.run(market._coinbase_page(_Client(_Resp(500, None)), "PAXG-USD", 3600))
+        raise AssertionError("500 should raise")
+    except market.MarketDataError as exc:
+        assert "500" in str(exc)
+
+
+def test_coinbase_rejects_an_unreadable_body():
+    import asyncio
+
+    try:
+        asyncio.run(market._coinbase_page(_Client(_Resp(200, ValueError("x"))), "PAXG-USD", 3600))
+        raise AssertionError("bad json should raise")
+    except market.MarketDataError as exc:
+        assert "unreadable" in str(exc)
+
+
+def test_coinbase_rejects_an_empty_list():
+    import asyncio
+
+    try:
+        asyncio.run(market._coinbase_page(_Client(_Resp(200, [])), "PAXG-USD", 3600))
+        raise AssertionError("empty list should raise")
+    except market.MarketDataError as exc:
+        assert "no candles" in str(exc)
+
+
+def test_coinbase_paginates_until_enough_history():
+    import asyncio
+
+    page = [[1793311200 + i * 3600, 1.0, 2.0, 1.5, 1.8, 5.0] for i in range(60)]
+    older = [[1793311200 - (i + 1) * 3600, 1.0, 2.0, 1.5, 1.8, 5.0] for i in range(60)]
+    fake = _Client(_Resp(200, page), _Resp(200, older))
+    out = asyncio.run(market._spot_via_coinbase(fake, {"product": "PAXG-USD"}, "1h"))
+    assert len(out) == 120  # first page plus one older page
+
+
+def test_coinbase_pagination_stops_at_the_end_of_history():
+    """An exhausted feed must not loop forever: stop and use what we have."""
+    import asyncio
+
+    page = [[1793311200 + i * 3600, 1.0, 2.0, 1.5, 1.8, 5.0] for i in range(60)]
+    fake = _Client(_Resp(200, page), _Resp(500, None))  # the older page fails
+    out = asyncio.run(market._spot_via_coinbase(fake, {"product": "PAXG-USD"}, "1h"))
+    assert len(out) == 60
+
+
+# ---- fetch_spot_series (Kraken then Coinbase) ----
+
+def test_spot_series_uses_kraken_when_it_answers(monkeypatch):
+    import asyncio
+
+    rows = [[1793311200 + i * 60, 1.0, 2.0, 0.5, 1.5, 1.0, 9.0, 0] for i in range(70)]
+    fake = _Client(_Resp(200, {"error": [], "result": {"PAXGUSD": rows, "last": 1}}))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    s = asyncio.run(market.fetch_spot_series("XAUUSD", "1h"))
+    assert s.exchange == "Kraken PAXG/USD" and len(s.candles) == 70
+    assert s.instrument_type == "SPOT" and s.currency == "USD"
+
+
+def test_spot_series_falls_back_to_coinbase_when_kraken_fails(monkeypatch):
+    import asyncio
+
+    rows = [[1793311200 + i * 3600, 1.0, 2.0, 0.5, 1.5, 9.0] for i in range(120)]
+    fake = _Client(_Resp(503, None), _Resp(200, rows))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    s = asyncio.run(market.fetch_spot_series("XAUUSD", "1h"))
+    assert s.exchange == "Coinbase PAXG-USD" and len(s.candles) == 120
+
+
+def test_spot_series_reports_both_sources_failing(monkeypatch):
+    import asyncio
+
+    fake = _Client(_Resp(503, None), _Resp(500, None))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    try:
+        asyncio.run(market.fetch_spot_series("XAUUSD", "1h"))
+        raise AssertionError("both failing should raise")
+    except market.MarketDataError as exc:
+        assert "503" in str(exc) and "500" in str(exc)
+
+
+def test_spot_series_has_no_source_for_an_unknown_instrument():
+    import asyncio
+
+    try:
+        asyncio.run(market.fetch_spot_series("XPTUSD", "1h"))
+        raise AssertionError("unknown spot instrument should raise")
+    except market.MarketDataError as exc:
+        assert "no spot source" in str(exc)
+
+
+def test_spot_series_rejects_an_unsupported_timeframe():
+    import asyncio
+
+    try:
+        asyncio.run(market.fetch_spot_series("XAUUSD", "2h"))
+        raise AssertionError("2h should raise")
+    except market.MarketDataError as exc:
+        assert "2h" in str(exc)
+
+
+def test_spot_series_refuses_too_little_history(monkeypatch):
+    import asyncio
+
+    rows = [[1793311200 + i * 60, 1.0, 2.0, 0.5, 1.5, 1.0, 9.0, 0] for i in range(30)]
+    fake = _Client(_Resp(200, {"error": [], "result": {"PAXGUSD": rows}}))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    try:
+        asyncio.run(market.fetch_spot_series("XAUUSD", "1h"))
+        raise AssertionError("short history should raise")
+    except market.MarketDataError as exc:
+        assert "not enough history" in str(exc)
+
+
+# ---- fetch_spot (the broker quote beside the chart) ----
+
+def test_fetch_spot_prefers_swissquote():
+    import asyncio
+
+    payload = [{"spreadProfilePrices": [{"spreadProfile": "premium", "bid": 4002.1, "ask": 4002.4}]}]
+    out = asyncio.run(_fetch_spot_with(_Client(_Resp(200, payload))))
+    assert out["source"] == "Swissquote" and out["price"] == 4002.25
+
+
+def test_fetch_spot_falls_back_to_gold_api():
+    import asyncio
+
+    body = {"name": "Gold", "price": 4001.5, "currency": "USD", "updatedAt": "2026-01-01"}
+    out = asyncio.run(_fetch_spot_with(_Client(_Resp(503, None), _Resp(200, body))))
+    assert out["source"] == "gold-api" and out["price"] == 4001.5
+
+
+def test_fetch_spot_reports_both_sources_failing():
+    import asyncio
+
+    try:
+        asyncio.run(_fetch_spot_with(_Client(_Resp(503, None), _Resp(500, None))))
+        raise AssertionError("both failing should raise")
+    except market.MarketDataError as exc:
+        assert "Swissquote" in str(exc) and "gold-api" in str(exc)
+
+
+def test_fetch_spot_survives_an_exception_on_either_source():
+    import asyncio
+
+    try:
+        asyncio.run(_fetch_spot_with(_Client(market.httpx.ConnectError("a"),
+                                             ValueError("b"))))
+        raise AssertionError("exceptions should be collected and raise")
+    except market.MarketDataError as exc:
+        assert "Swissquote" in str(exc)
+
+
+def test_fetch_spot_rejects_an_unknown_metal():
+    import asyncio
+
+    try:
+        asyncio.run(market.fetch_spot("XPD"))
+        raise AssertionError("unknown metal should raise")
+    except market.MarketDataError as exc:
+        assert "unsupported spot metal" in str(exc)
+
+
+async def _fetch_spot_with(fake):
+    """Drive fetch_spot with an injected client, since it builds its own."""
+    orig = market.httpx.AsyncClient
+    market.httpx.AsyncClient = lambda **k: fake
+    try:
+        return await market.fetch_spot("XAU")
+    finally:
+        market.httpx.AsyncClient = orig
+
+
+# --------------------------------------------- the browser side has tests too
+
+def test_ui_helpers_pass_under_node():
+    """The card is half the product; run its pure helpers under node.
+
+    Skipped when node is absent so a Python-only environment still passes; CI
+    runs the same file directly in a dedicated job, so it is never skipped there.
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    root = Path(__file__).resolve().parent.parent
+    proc = subprocess.run(
+        [node, "--test", str(root / "web" / "app.test.mjs")],
+        capture_output=True, text=True, cwd=root, check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_page_loads_app_js_as_a_module():
+    """app.js imports lib.js, so the tag must be type=module or the import fails."""
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text("utf-8")
+    assert 'type="module"' in html
+    assert 'src="/static/app.js"' in html
+
+
+def test_the_page_and_the_server_share_one_precision_rule():
+    """The card must not import its own copy of price_decimals.
+
+    Two copies of one rule is the drift this project keeps finding; lib.js is
+    the single source, and the server's indicators.price_decimals mirrors it.
+    """
+    from pathlib import Path
+
+    web = Path(__file__).resolve().parent.parent / "web"
+    app_js = (web / "app.js").read_text("utf-8")
+    assert "from \"./lib.js\"" in app_js
+    assert "function fmt(" not in app_js      # not re-declared locally
+    assert "function esc(" not in app_js
+    lib = (web / "lib.js").read_text("utf-8")
+    assert "export function fmt" in lib and "export function esc" in lib
+
+
+# ------------------------------------------------- accessibility and mobile
+
+def _page():
+    from pathlib import Path
+    return (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text("utf-8")
+
+
+def test_page_declares_a_language_and_direction():
+    html = _page()
+    assert 'lang="ar"' in html and 'dir="rtl"' in html
+
+
+def test_interactive_controls_are_labelled():
+    """A bare <select> has no accessible name; each one needs a <label>."""
+    html = _page()
+    assert 'for="sym"' in html and 'for="iv"' in html
+    assert 'aria-pressed' in html           # the language toggle states its state
+
+
+def test_status_region_announces_itself():
+    """The load/error line is a live region, or a screen reader never hears it."""
+    html = _page()
+    assert 'role="status"' in html and 'aria-live="polite"' in html
+
+
+def test_motion_and_focus_preferences_are_respected():
+    html = _page()
+    assert "prefers-reduced-motion" in html
+    assert ":focus-visible" in html
+    assert "@media(max-width:560px)" in html
+
+
+def test_canvas_carries_a_text_description():
+    """A canvas is opaque to assistive tech; the panel adds a description."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "web" / "app.js").read_text("utf-8")
+    assert "role=\"img\"" in js and "aria-label=" in js
+    assert "sr-only" in js
+    assert "function chartAlt" in js
+
+
+def test_chart_draws_axes_not_just_candles():
+    """A chart with no price or time axis is decoration, not a chart."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "web" / "app.js").read_text("utf-8")
+    assert "padR" in js and "padB" in js          # reserved axis gutters
+    assert "fillText(fmt(v)" in js                # price labels
+    assert "toLocaleString" in js                 # time labels
+
+
+# ------------------------------------- the rate limit's scope must stay honest
+
+def test_image_pins_one_worker():
+    """The limiter counts in-process, so N workers would mean N times the limit.
+
+    Pinning --workers 1 is what makes the configured number the real number.
+    If someone raises it, they must move the counter to a shared store first --
+    this test makes that a deliberate act, not an accident.
+    """
+    from pathlib import Path
+
+    dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text("utf-8")
+    cmd = [ln for ln in dockerfile.splitlines() if ln.startswith("CMD")]
+    assert cmd, "no CMD in the Dockerfile"
+    assert "--workers 1" in cmd[0], "the image must run a single worker for the limiter to hold"
+
+
+def test_rate_limit_scope_is_documented_not_hidden():
+    """The limitation must be written down where a reader will meet it."""
+    from pathlib import Path
+
+    main_src = (Path(__file__).resolve().parent.parent / "app" / "main.py").read_text("utf-8")
+    # Collapse comment markers and newlines so a phrase split across two comment
+    # lines still matches.
+    flat = " ".join(main_src.replace("#", " ").split())
+    assert "per process" in flat
+    assert "--workers 1" in flat

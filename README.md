@@ -4,6 +4,8 @@
 
 An AI-driven market analysis desk built on **real market data**.
 
+كيف بُني، وليش كل طبقة منفصلة، ووين الحدود — في [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 ---
 
 ## الفكرة / What it does
@@ -182,9 +184,13 @@ app/
   ai.py          طبقة التفسير + حارس التحقّق + الموديلات البديلة
   main.py        واجهة FastAPI + رؤوس الأمان + حدّ الطلبات
 web/index.html   الواجهة (عربي/إنجليزي، بلا أي اعتماد خارجي)
-web/app.js       سكربت الواجهة (خارجي عمداً — CSP بيمنع inline)
-tests/           ٩١ اختباراً على المسارات الحقيقية، بلا محاكاة
+web/lib.js       دوال نقية (esc، fmt، priceDecimals) يشترك بها المتصفح واختبارات node
+web/app.js       سكربت الواجهة (module خارجي عمداً — CSP بيمنع inline)
+web/app.test.mjs ٨ اختبارات لواجهة المستخدم عبر `node --test`
+tests/           ١٢٨ اختباراً على المسارات الحقيقية، بلا محاكاة
 scripts/         فحص النشر + التنبيه
+pyproject.toml   مصدر واحد: الاعتماديات + إعدادات ruff/pytest/coverage/mypy
+ARCHITECTURE.md  الطبقات وتدفّق البيانات والحدود الصريحة
 .github/         CI + قالب الـPR + مراقبة النشر
 ```
 

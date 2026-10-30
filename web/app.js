@@ -1,3 +1,7 @@
+// Pure helpers (escaping, precision) live in lib.js so the node test runner can
+// exercise them directly. Anything that touches the DOM stays here.
+import { esc, fmt, basisPct, signedPct } from "./lib.js";
+
 const T = {
   ar:{title:"AnalysisDesk",tagline:"تحليل فني شفّاف على بيانات سوق حقيقية",go:"تحليل",
       reading:"قراءة السوق",agreement:"توافق المؤشرات",entry:"الدخول",sl:"وقف الخسارة",
@@ -32,6 +36,8 @@ function setLang(l){
   document.documentElement.dir = l==="ar"?"rtl":"ltr";
   document.getElementById("l-ar").className = l==="ar"?"on":"";
   document.getElementById("l-en").className = l==="en"?"on":"";
+  document.getElementById("l-ar").setAttribute("aria-pressed", l==="ar"?"true":"false");
+  document.getElementById("l-en").setAttribute("aria-pressed", l==="en"?"true":"false");
   const t=T[l];
   title.textContent=t.title; tagline.textContent=t.tagline;
   go.textContent=t.go; footline.textContent=t.foot; disc.textContent=t.disc;
@@ -77,25 +83,8 @@ function fillSelects(){
   sym.value="EURUSD=X"; iv.value="1h";
 }
 
-// Precision mirrors indicators.price_decimals on the server, so the card and the
-// API agree on how many decimals a number of this size deserves. They drifted
-// before: the server showed 57.2346 while the card showed 57.235.
-function fmt(n){
-  if(n===null||n===undefined) return "—";
-  const a=Math.abs(n);
-  const p = a>=1000?2 : a>=100?3 : a>=10?4 : 5;
-  return Number(n).toLocaleString("en-US",{minimumFractionDigits:p,maximumFractionDigits:p});
-}
-
-// Every server-supplied string goes through here before it is placed in the
-// template. The panel is built with innerHTML, so an unescaped value from the
-// API -- the model's prose above all -- would be parsed as markup. The number
-// guard on the server checks figures, not tags; escaping is what stops a tag.
-function esc(v){
-  return String(v===null||v===undefined?"":v)
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
-}
+// The panel is built with innerHTML, so an unescaped value from the API would
+// be parsed as markup. esc() lives in lib.js (shared with the node tests).
 
 async function boot(){
   try{
@@ -123,6 +112,17 @@ async function run(){
       <b>${t.failed}</b><br>${esc((e.message||e)+"")}</div></div>`;
     status.textContent="";
   }finally{ go.disabled=false; BUSY=false; }
+}
+
+// A canvas is invisible to a screen reader, so it carries a text description of
+// what it draws: the range and the last close. The same text is printed in an
+// sr-only paragraph so the description is reachable, not just an attribute.
+function chartAlt(d, s){
+  const i=d.indicators;
+  const hi=fmt(i.resistance), lo=fmt(i.support);
+  return LANG==="ar"
+    ? `رسم شموع ${d.symbol} على فريم ${d.interval}: النطاق بين دعم ${lo} ومقاومة ${hi}، وآخر سعر ${fmt(i.price)}.`
+    : `Candlestick chart for ${d.symbol} on ${d.interval}: range between support ${lo} and resistance ${hi}, last price ${fmt(i.price)}.`;
 }
 
 function paint(d){
@@ -158,13 +158,13 @@ function paint(d){
   }
   if (inst.exchange) prov += `<span>${esc(inst.exchange)}</span>`;
   if (d.spot && d.spot.price) {
-    const basis = ((i.price - d.spot.price) / d.spot.price) * 100;
+    const basis = basisPct(i.price, d.spot.price);
     prov += `<span>${t.spot} ${esc(d.spot.metal)}: <b>${fmt(d.spot.price)}</b>`
           + (d.spot.source ? ` <i>${esc(d.spot.source)}</i>` : "") + `</span>`;
     // On a futures contract this gap is the basis; on the spot instrument it is
     // how closely the charted market tracks the live broker quote.
     const label = inst.kind==="futures" ? t.basis : t.track;
-    prov += `<span>${label}: <b>${basis>=0?"+":""}${basis.toFixed(2)}%</b></span>`;
+    prov += `<span>${label}: <b>${signedPct(basis)}</b></span>`;
   } else if (d.spot && d.spot.error) {
     prov += `<span class="provmiss">${t.spot}: ${t.failed}</span>`;
   }
@@ -199,7 +199,8 @@ function paint(d){
       </div>
       <div class="h" style="margin-top:18px"><h2>${t.chart}</h2>
         <span class="sub" style="color:var(--dim);font-size:11.5px">${esc(d.interval)}</span></div>
-      <canvas id="cv"></canvas>
+      <canvas id="cv" role="img" aria-label="${esc(chartAlt(d, s))}"></canvas>
+      <p class="sr-only">${esc(chartAlt(d, s))}</p>
       ${warns?`<div class="warns">${warns}</div>`:""}
     </div>
 
@@ -243,27 +244,55 @@ async function drawChart(){
     data=(await r.json()).candles;
   }catch(e){ return; }
   if(!Array.isArray(data)||!data.length) return;
+
   const dpr=window.devicePixelRatio||1;
   const W=cv.clientWidth, H=260;
   cv.width=W*dpr; cv.height=H*dpr;
   const x=cv.getContext("2d"); x.scale(dpr,dpr);
   x.clearRect(0,0,W,H);
 
-  const pad=8, lo=Math.min(...data.map(c=>c.l)), hi=Math.max(...data.map(c=>c.h));
+  // Room on the right for the price labels and at the bottom for the dates.
+  const padL=8, padR=58, padT=10, padB=22;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+  const lo=Math.min(...data.map(c=>c.l)), hi=Math.max(...data.map(c=>c.h));
   const span=hi-lo||1;
-  const Y=v=>pad+(hi-v)/span*(H-2*pad);
-  const bw=(W-2*pad)/data.length;
+  const Y=v=>padT+(hi-v)/span*plotH;
+  const bw=plotW/data.length;
 
-  x.strokeStyle="rgba(255,255,255,.04)"; x.lineWidth=1;
-  for(let g=0;g<=4;g++){const y=pad+g*(H-2*pad)/4;x.beginPath();x.moveTo(0,y);x.lineTo(W,y);x.stroke();}
+  x.font="10px ui-monospace,SFMono-Regular,Menlo,monospace";
+  x.textBaseline="middle";
 
+  // Grid + price axis. A chart with no numbers is decoration; the reader has to
+  // be able to read a level off it.
+  x.strokeStyle="rgba(255,255,255,.05)"; x.lineWidth=1;
+  x.fillStyle="rgba(125,139,154,.9)";
+  for(let g=0; g<=4; g++){
+    const y=padT+g*plotH/4, v=hi-(hi-lo)*g/4;
+    x.beginPath(); x.moveTo(padL,y); x.lineTo(padL+plotW,y); x.stroke();
+    x.textAlign="left";
+    x.fillText(fmt(v), padL+plotW+6, y);
+  }
+
+  // Candles.
   data.forEach((c,k)=>{
-    const cx=pad+k*bw, o=Y(c.o), cl=Y(c.c);
+    const cx=padL+k*bw, o=Y(c.o), cl=Y(c.c);
     const up=c.c>=c.o, col=up?"#26a269":"#e5534b";
     x.strokeStyle=col; x.fillStyle=col;
     x.beginPath(); x.moveTo(cx+bw/2, Y(c.h)); x.lineTo(cx+bw/2, Y(c.l)); x.stroke();
     const top=Math.min(o,cl), hgt=Math.max(Math.abs(cl-o),1);
     x.fillRect(cx+bw*0.15, top, Math.max(bw*0.7,1), hgt);
+  });
+
+  // Time axis: first, middle and last candle. Locale-aware, day+month for the
+  // daily/weekly frames and hh:mm for the intraday ones.
+  const intraday = !["1d","1wk"].includes(last.interval);
+  const stamp = t => new Date(t*1000).toLocaleString(LANG==="ar"?"ar-EG":"en-GB",
+      intraday ? {hour:"2-digit",minute:"2-digit"} : {day:"2-digit",month:"short"});
+  x.fillStyle="rgba(125,139,154,.9)"; x.textBaseline="top";
+  [[0,"left"],[Math.floor(data.length/2),"center"],[data.length-1,"right"]].forEach(([i,al])=>{
+    const px = i===0?padL : i===data.length-1?padL+plotW : padL+i*bw+bw/2;
+    x.textAlign=al;
+    x.fillText(stamp(data[i].t), px, padT+plotH+6);
   });
 }
 

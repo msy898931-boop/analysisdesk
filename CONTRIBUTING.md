@@ -57,7 +57,7 @@ Add the marker to any test that hits a live endpoint.
 ## Style
 
 `ruff` decides formatting and most style (line length 110, py311+). The ignores
-in `ruff.toml` are each justified in a comment; if you need a new one, say why
+in `pyproject.toml` (`[tool.ruff]`) are each justified in a comment; if you need a new one, say why
 next to it.
 
 ## Data sources

@@ -39,7 +39,7 @@ python -m uvicorn app.main:app --port 12000
 ## Traps found the hard way
 
 - **`l` is the low of an OHLC candle.** E741 is deliberately ignored in
-  `ruff.toml`; do not "fix" it by renaming the variable.
+  `pyproject.toml` (`[tool.ruff]`); do not "fix" it by renaming the variable.
 - **`scripts/check_deploy.py` probes `/robots.txt` on purpose.** That is the
   one path Render answers while a Free instance is spun down *without waking
   it*. A check that also causes traffic cannot observe the sleep state. Do not
@@ -58,7 +58,7 @@ python -m uvicorn app.main:app --port 12000
 
 ## Style
 
-`ruff.toml` is the source of truth (line 110, py311+, rules E/F/I/S/B/UP/SIM/PL).
+`pyproject.toml` (`[tool.ruff]`) is the source of truth (line 110, py311+, rules E/F/I/S/B/UP/SIM/PL).
 Every ignore there is justified in a comment. Comments in code explain *why*;
 if a line only restates the code, delete it.
 

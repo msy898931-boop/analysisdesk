@@ -30,4 +30,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,os; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','12000')+'/api/health').read()" || exit 1
 
 # Bind to 0.0.0.0 so the platform's router can reach it.
-CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]
+#
+# --workers 1 is deliberate. The rate limiter counts in process memory, so with
+# N workers the effective limit is N x RATE_LIMIT_PER_MIN and a caller could get
+# N times the intended budget by spreading requests across workers. One worker
+# makes the in-process counter the instance counter -- the number the operator
+# set is the number that applies. The desk is I/O-bound (it waits on four
+# upstreams, not on CPU), so a single worker is not a throughput problem; if
+# that ever changes, move the counter to a shared store (Redis) before raising
+# this, not after.
+CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]

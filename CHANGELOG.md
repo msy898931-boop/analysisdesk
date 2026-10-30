@@ -65,11 +65,28 @@ plain: what changed, and why it mattered.
   `@pytest.mark.network` and deselected so a red build means we broke
   something, not that a feed was slow.
 - **`LICENSE`** (MIT), `CONTRIBUTING.md`, `AGENTS.md`, and this changelog.
-- **`ruff.toml`** and **`pytest.ini`** — the lint rules and test defaults are
-  now declared rather than implied.
+- **`pyproject.toml`** — the runtime dependencies, the lint rules, the test
+  defaults, the coverage floor and the type-check settings live in one file, so
+  `ruff.toml` and `pytest.ini` are gone. `requirements.txt` is kept in step and
+  a test asserts the two cannot drift apart.
+- **`web/lib.js`** — the browser helpers (`esc`, `fmt`, `priceDecimals`,
+  `basisPct`) as a module the page and node's test runner share, so the escaping
+  and precision rules have one copy instead of two.
+- **`ARCHITECTURE.md`** — the layers, the data flow for one request, the
+  deployment topology, and the honest limits, written down where a reader meets
+  them.
+- **The chart has axes.** Price labels on the right and dates along the bottom;
+  a chart without them is decoration, not a chart.
+- **The card is usable without sight, a mouse, or a wide screen.** The canvas
+  carries a text description, the selects are labelled, the status line is a
+  live region, focus is visible, reduced-motion is honoured, and the controls
+  stack under 560px.
+- **A `ui` CI job** runs the browser helpers under `node --test`.
 
 ### Tests
 
-- Coverage 67% → 74%; the suite grew from 77 to 91 tests, including the abuse
-  guard, the forwarded-IP fix, the degenerate-price cases, the spot cache, the
-  fallback attribution, and the markup-stripping path.
+- Coverage 67% → **87%**; the suite grew from 77 to **128 tests** (plus 8 UI
+  tests under node). New this pass: every market venue and every failure path
+  (`market.py` 49% → 99%), the browser helpers, the accessibility and mobile
+  rules, and two tests that pin the single-worker rate-limit scope so raising it
+  is a deliberate act.

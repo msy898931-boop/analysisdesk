@@ -66,9 +66,10 @@ async def security_headers(request: Request, call_next):
 # --- abuse guard ------------------------------------------------------------
 # The analysis endpoints spend the owner's model quota, so an open door is a
 # cost risk even when it is not a data risk. The limit is per client IP and per
-# process: a restart clears it and a second worker would not share it. That is
-# a real limitation, stated rather than hidden -- it stops casual scraping and
-# runaway loops, which is what actually threatens the quota.
+# process: a restart clears it and a second worker would not share it. The image
+# therefore pins --workers 1 (see the Dockerfile), which makes the in-process
+# counter the instance counter -- one worker, one limit. It still stops casual
+# scraping and runaway loops, which is what actually threatens the quota.
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
 # Optional. When set, a caller that is not the bundled page must present it.
 API_KEY = os.getenv("DESK_API_KEY", "").strip()
