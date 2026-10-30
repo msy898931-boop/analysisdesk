@@ -13,12 +13,14 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from dotenv import load_dotenv
 
 from . import ai, indicators, market, signals
 
@@ -26,6 +28,80 @@ load_dotenv()
 
 app = FastAPI(title="AnalysisDesk", version="1.0.0")
 WEB = Path(__file__).resolve().parent.parent / "web"
+
+# The desk renders server-supplied strings, so a tag that reaches the browser is
+# a tag the browser obeys. Two things stop that: the client escapes every value,
+# and this header refuses to run any script that did not come from our own
+# origin. 'unsafe-inline' is granted to styles only -- the page uses style
+# attributes for the layout; script stays strict, which is what defeats XSS.
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'; "
+    "object-src 'none'"
+)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+# --- abuse guard ------------------------------------------------------------
+# The analysis endpoints spend the owner's model quota, so an open door is a
+# cost risk even when it is not a data risk. The limit is per client IP and per
+# process: a restart clears it and a second worker would not share it. That is
+# a real limitation, stated rather than hidden -- it stops casual scraping and
+# runaway loops, which is what actually threatens the quota.
+RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
+# Optional. When set, a caller that is not the bundled page must present it.
+API_KEY = os.getenv("DESK_API_KEY", "").strip()
+
+_hits: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _client_ip(request: Request) -> str:
+    # Render terminates TLS in front of us; the first forwarded hop is the client.
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _within_rate(ip: str) -> bool:
+    now = time.time()
+    q = _hits[ip]
+    while q and now - q[0] > 60:
+        q.popleft()
+    if len(q) >= RATE_LIMIT:
+        return False
+    q.append(now)
+    return True
+
+
+async def guard(request: Request) -> None:
+    """Gate the data endpoints: optional key, then a per-IP rate limit."""
+    if API_KEY and request.headers.get("x-api-key") != API_KEY:
+        # The bundled page cannot carry the key without exposing it, so it is
+        # trusted by a header a page's own script cannot forge: the browser sets
+        # Sec-Fetch-Site and it is a forbidden header name. A direct API call
+        # sends nothing, and is turned away.
+        if request.headers.get("sec-fetch-site") != "same-origin":
+            raise HTTPException(401, "missing or invalid API key")
+    if not _within_rate(_client_ip(request)):
+        raise HTTPException(429, "too many requests; try again shortly",
+                            headers={"Retry-After": "60"})
+
 
 WATCHLIST = [
     {"symbol": "EURUSD=X", "name_ar": "يورو/دولار", "name_en": "EUR/USD", "class": "forex"},
@@ -62,6 +138,7 @@ async def symbols():
 
 @app.get("/api/analyze")
 async def analyze(
+    request: Request,
     symbol: str = Query(..., description="Yahoo Finance symbol, e.g. EURUSD=X"),
     interval: str = Query("1h"),
     lang: str = Query("ar"),
@@ -70,12 +147,15 @@ async def analyze(
         raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
     if lang not in ("ar", "en"):
         raise HTTPException(400, "lang must be ar or en")
+    # Charge the quota only for a request we would actually serve: a bad
+    # parameter is free, so a typo cannot lock a user out for a minute.
+    await guard(request)
 
     try:
         series = await market.fetch_series(symbol, interval)
     except market.MarketDataError as exc:
         # Fail loudly. A silent all-clear is the one thing we never emit.
-        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}")
+        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
 
     ind = indicators.snapshot(series)
     sig = signals.signal_dict(signals.evaluate(ind))
@@ -119,11 +199,14 @@ async def analyze(
 
 
 @app.get("/api/candles")
-async def candles(symbol: str, interval: str = "1h"):
+async def candles(request: Request, symbol: str, interval: str = "1h"):
+    if interval not in market.INTERVALS:
+        raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
+    await guard(request)
     try:
         series = await market.fetch_series(symbol, interval)
     except market.MarketDataError as exc:
-        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}")
+        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
     return {
         "symbol": series.symbol,
         "interval": interval,

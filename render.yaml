@@ -16,3 +16,11 @@ services:
       # Without it the app still works: it falls back to the computed explanation.
       - key: GROQ_API_KEY
         sync: false
+      # Per-IP requests per minute against the analysis endpoints. Kept as a
+      # variable so it can be raised without a rebuild if real use needs it.
+      - key: RATE_LIMIT_PER_MIN
+        value: "60"
+      # Optional. Leave unset and the API is open (rate-limited only). Set it to
+      # require a key from callers that are not the bundled page.
+      - key: DESK_API_KEY
+        sync: false

@@ -190,8 +190,14 @@ def evaluate(ind: dict) -> Signal:
                            f"داخل النطاق (الموضع {pos:.2f})"))
 
     # --- Levels -----------------------------------------------------------
-    room_up = (ind["resistance"] - price) / price
-    room_down = (price - ind["support"]) / price
+    # A price of zero or below is not a market reading, it is a broken one, and
+    # dividing by it crashes the whole read. The `fatal` check below already
+    # rejects it, but it runs after this point, so guard the division here too.
+    if _finite(price) and price > 0:
+        room_up = (ind["resistance"] - price) / price
+        room_down = (price - ind["support"]) / price
+    else:
+        room_up = room_down = 0.0
     if room_up > room_down * 1.5:
         rules.append(_rule("level_room", "bullish", 1,
                            f"more room up to {_f(ind['resistance'])} than down to {_f(ind['support'])}",
@@ -223,7 +229,8 @@ def evaluate(ind: dict) -> Signal:
     total = sum(r.weight for r in rules)
     decided = bull + bear
 
-    fatal = not _finite(ind.get("atr")) or ind["atr"] <= 0 or not _finite(price)
+    fatal = (not _finite(ind.get("atr")) or ind["atr"] <= 0
+             or not _finite(price) or price <= 0)
     if fatal or bull == bear or decided == 0:
         direction = "NEUTRAL"
         score = 0.0

@@ -66,6 +66,19 @@ class MarketDataError(RuntimeError):
 
 
 _cache: dict[tuple[str, str], tuple[float, Series]] = {}
+# A symbol the watchlist does not name can still be requested, so the key space
+# is unbounded. TTL alone does not cap it: entries are only dropped when they
+# are asked for again, so a caller who walks distinct symbols grows this
+# forever. The cap evicts the oldest entry first, which is the one least likely
+# to be asked for again.
+_CACHE_MAX = 256
+
+
+def _cache_put(key: tuple[str, str], value: tuple[float, Series]) -> None:
+    if key not in _cache and len(_cache) >= _CACHE_MAX:
+        oldest = min(_cache, key=lambda k: _cache[k][0])
+        _cache.pop(oldest, None)
+    _cache[key] = value
 
 
 async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False) -> Series:
@@ -127,7 +140,7 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
         short_name=meta.get("shortName") or meta.get("longName") or "",
         instrument_type=meta.get("instrumentType") or "",
     )
-    _cache[key] = (now, series)
+    _cache_put(key, (now, series))
     return series
 
 
@@ -197,7 +210,8 @@ def _to_weekly(daily: list[Candle]) -> list[Candle]:
     """Fold daily candles into ISO weeks, for sources without a weekly step."""
     weeks: dict[tuple[int, int], list[Candle]] = {}
     for c in daily:
-        key = tuple(datetime.datetime.fromtimestamp(c.t, datetime.UTC).isocalendar()[:2])
+        iso = datetime.datetime.fromtimestamp(c.t, datetime.UTC).isocalendar()
+        key = (iso[0], iso[1])
         weeks.setdefault(key, []).append(c)
     out = []
     for _, group in sorted(weeks.items(), key=lambda kv: kv[1][0].t):

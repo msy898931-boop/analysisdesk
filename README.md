@@ -115,10 +115,10 @@ docker run -p 8080:8080 -e PORT=8080 -e GROQ_API_KEY=... analysisdesk
 
 ```bash
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 12000
 ```
 
-ثم افتح `http://localhost:8000`.
+ثم افتح `http://localhost:12000`.
 
 Groq مفتاح اختياري: إن لم يوجد `GROQ_API_KEY`، تعمل المنصّة كاملة وتبني التفسير
 من المحرّك الحسابي بدلاً من الموديل. وإن انتهت حصة الموديل، تنتقل تلقائياً إلى
@@ -127,6 +127,8 @@ Groq مفتاح اختياري: إن لم يوجد `GROQ_API_KEY`، تعمل ا�
 ```bash
 export GROQ_API_KEY=...              # اختياري
 export ANALYSIS_MODELS="openai/gpt-oss-120b,qwen/qwen3.8-27b"   # اختياري
+export RATE_LIMIT_PER_MIN=60         # اختياري — طلبات لكل IP بالدقيقة
+export DESK_API_KEY=...              # اختياري — يفرض مفتاحاً على من هو خارج الصفحة
 ```
 
 ---
@@ -144,8 +146,29 @@ export ANALYSIS_MODELS="openai/gpt-oss-120b,qwen/qwen3.8-27b"   # اختياري
 مثال:
 
 ```bash
-curl "http://localhost:8000/api/analyze?symbol=GC=F&interval=1h&lang=ar"
+curl "http://localhost:12000/api/analyze?symbol=GC=F&interval=1h&lang=ar"
 ```
+
+### الحماية / Guard
+
+نقاط التحليل بتصرف حصة الموديل، فهي **محدودة لكل IP** (`RATE_LIMIT_PER_MIN`،
+افتراضياً ٦٠ بالدقيقة). وإذا انضبط `DESK_API_KEY`، أي طلب من خارج الصفحة نفسها
+لازم يقدّم المفتاح؛ الصفحة بتُستثنى عبر `Sec-Fetch-Site: same-origin` — هيدر
+المتصفح بيكتبه ولا تقدر صفحة تزوّره. بلا `DESK_API_KEY` الـ API مفتوح لكن
+محدود. الحد لكل عملية على حدة (بالذاكرة)، يعني إعادة التشغيل بتصفّره — هاد
+مذكور صراحةً، مو مخبّى.
+
+---
+
+## الأمان / Security
+
+- **كل نص من السيرفر بينزل للمتصفح عبر `esc()`** في `web/app.js`، والسرد
+  الآلي بينضاف عليه تنظيف markup بالسيرفر (`_strip_markup` في `app/ai.py`).
+- **رؤوس أمان على كل استجابة**: `Content-Security-Policy` (`script-src 'self'`
+  — بيمنع أي سكربت inline)، `X-Content-Type-Options: nosniff`،
+  `X-Frame-Options: DENY`، `Referrer-Policy: no-referrer`.
+- **الحاوية بتشتغل بمستخدم غير root** (`desk`, uid 10001).
+- **`pip-audit` نظيف** و**`bandit` نظيف** (لا نتائج medium/high).
 
 ---
 
@@ -153,13 +176,16 @@ curl "http://localhost:8000/api/analyze?symbol=GC=F&interval=1h&lang=ar"
 
 ```
 app/
-  market.py      بيانات السوق الحقيقية (Yahoo Finance، بلا مفاتيح) + تخزين مؤقت
+  market.py      بيانات السوق الحقيقية (Yahoo Finance، بلا مفاتيح) + تخزين مؤقت محدود
   indicators.py  RSI, MACD, EMA, ATR, Bollinger, Stochastic, مستويات الدعم/المقاومة
   signals.py     محرّك القرار الحتمي + التحذيرات ثنائية اللغة
   ai.py          طبقة التفسير + حارس التحقّق + الموديلات البديلة
-  main.py        واجهة FastAPI
+  main.py        واجهة FastAPI + رؤوس الأمان + حدّ الطلبات
 web/index.html   الواجهة (عربي/إنجليزي، بلا أي اعتماد خارجي)
-tests/           ٣٢ اختباراً على المسارات الحقيقية، بلا محاكاة
+web/app.js       سكربت الواجهة (خارجي عمداً — CSP بيمنع inline)
+tests/           ٨٤ اختباراً على المسارات الحقيقية، بلا محاكاة
+scripts/         فحص النشر + التنبيه
+.github/         CI + قالب الـPR + مراقبة النشر
 ```
 
 ---
@@ -167,11 +193,26 @@ tests/           ٣٢ اختباراً على المسارات الحقيقية�
 ## الاختبارات / Tests
 
 ```bash
-python -m pytest tests/ -q
+python -m pytest tests/ -m "not network"   # اللي بيشتغل بالـCI — بلا شبكة
+python -m pytest tests/                    # مع اختبارات الشبكة الحيّة
 ```
 
 الاختبارات تعمل على الكود الحقيقي: محرّك الإشارات، رياضيات المؤشرات، وحارس
 التحقّق، وواجهة الـ API مع بيانات سوق حيّة. لا توجد أي mocks.
+
+الاختبارات اللي بتلمس مصادر خارجية معلَّمة بـ`@pytest.mark.network` ومستثناة
+من الـCI: بناء أحمر لازم يعني «إحنا كسرنا شي»، مو «مصدر بطيء».
+
+### الفحوصات / Checks
+
+```bash
+ruff check app/ tests/ scripts/
+mypy app/ --ignore-missing-imports
+bandit -q -r app/ scripts/ -ll
+pip-audit -r requirements.txt
+```
+
+كلها بتشتغل بالـCI على Python 3.11 و3.12 (`.github/workflows/ci.yml`).
 
 ---
 

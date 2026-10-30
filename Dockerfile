@@ -13,9 +13,21 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY web ./web
 
+# Run as an unprivileged user. The service only reads its own code and serves
+# HTTP, so it has no reason to be root; if the process is ever compromised, the
+# blast radius stays inside the container instead of the container being the
+# attacker's to keep.
+RUN useradd --create-home --uid 10001 desk \
+    && chown -R desk:desk /app
+USER desk
+
 # Render and most PaaS hosts inject $PORT at runtime; 12000 is only a local default.
 ENV PORT=12000
 EXPOSE 12000
+
+# Render probes healthCheckPath; this makes the image self-describing elsewhere.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request,os; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('PORT','12000')+'/api/health').read()" || exit 1
 
 # Bind to 0.0.0.0 so the platform's router can reach it.
 CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT}"]

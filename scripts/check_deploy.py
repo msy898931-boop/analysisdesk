@@ -53,9 +53,13 @@ def classify(status: int | None, body: str) -> str:
 
 
 def fetch(url: str) -> tuple[int | None, str]:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    # Only ever speak http(s). The base URL is operator-supplied, and urlopen
+    # would happily open file:// or a custom scheme if one were passed in.
+    if not url.lower().startswith(("http://", "https://")):
+        return None, "refused non-http scheme"
+    req = urllib.request.Request(url, headers={"User-Agent": UA})  # noqa: S310
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:  # noqa: S310  # nosec B310
             return r.status, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode("utf-8", "replace")
@@ -105,7 +109,8 @@ def notify(text: str) -> bool:
         f"https://api.telegram.org/bot{token}/sendMessage",
         data=payload, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        # The scheme is a literal https URL; nothing caller-supplied reaches it.
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:  # noqa: S310  # nosec B310
             return r.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False

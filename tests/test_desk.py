@@ -12,7 +12,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import ai, indicators, market, signals
+from app import ai, indicators, main, market, signals
 from app.indicators import _clean as ind_clean
 from app.main import app
 
@@ -189,6 +189,7 @@ def test_narrate_without_key_degrades_cleanly(monkeypatch):
 
 # ----------------------------------------------------------------- live market
 
+@pytest.mark.network
 def test_live_market_read_has_real_candles():
     s = asyncio.run(market.fetch_series("EURUSD=X", "1h"))
     assert len(s.candles) > 100
@@ -197,6 +198,7 @@ def test_live_market_read_has_real_candles():
     assert all(c.l <= c.o and c.l <= c.c for c in s.candles)
 
 
+@pytest.mark.network
 def test_unknown_symbol_is_reported_not_invented():
     with pytest.raises(market.MarketDataError):
         asyncio.run(market.fetch_series("NOT_A_REAL_SYMBOL_XYZ", "1h"))
@@ -215,6 +217,7 @@ def test_symbols_endpoint():
     assert "1h" in d["intervals"]
 
 
+@pytest.mark.network
 def test_analyze_live_end_to_end():
     r = client.get("/api/analyze", params={"symbol": "EURUSD=X", "interval": "1h", "lang": "ar"})
     assert r.status_code == 200
@@ -225,11 +228,13 @@ def test_analyze_live_end_to_end():
     assert "ليس توصية" in d["disclaimer"]
 
 
+@pytest.mark.network
 def test_analyze_rejects_bad_interval():
     r = client.get("/api/analyze", params={"symbol": "EURUSD=X", "interval": "7s"})
     assert r.status_code == 400
 
 
+@pytest.mark.network
 def test_analyze_reports_market_failure_loudly():
     """A failed read must never come back as a reassuring default."""
     r = client.get("/api/analyze", params={"symbol": "NOT_A_REAL_SYMBOL_XYZ", "interval": "1h"})
@@ -237,6 +242,7 @@ def test_analyze_reports_market_failure_loudly():
     assert "تعذّر قراءة" in r.json()["detail"]
 
 
+@pytest.mark.network
 def test_candles_endpoint_shape():
     r = client.get("/api/candles", params={"symbol": "BTC-USD", "interval": "1d"})
     assert r.status_code == 200
@@ -350,7 +356,9 @@ def test_kraken_parses_open_high_low_close_in_its_own_order():
     row = [1793232000, "4050.14", "4061.46", "4008.97", "4016.37", "4025.17", "221.74", 1863]
     c = market._kraken_row_to_candle(row) if hasattr(market, "_kraken_row_to_candle") else None
     # Parse through the public helper the fetcher uses.
-    import asyncio, httpx
+    import asyncio
+
+    import httpx
 
     class FakeResp:
         status_code = 200
@@ -543,8 +551,9 @@ def _frame_with(close_last: float):
 def test_snapshot_price_carries_no_float_tail():
     """EUR/USD closes land as 1.1185681819915771; the board must not ship that."""
     import pandas as pd  # noqa: F401
-    from app.market import Series
+
     import app.indicators as ind
+    from app.market import Series
 
     raw = 1.1185681819915771
     series = Series(symbol="EURUSD=X", currency="USD", exchange="test",
@@ -784,3 +793,138 @@ def test_hours_audit_refuses_to_guess_from_nothing():
     report = _WATCH["hours_audit"].audit([{"state": "unknown"}] * 10, services=1)
     assert report["projected"] is None
     assert "no usable readings" in report["verdict"]
+
+
+# --------------------------------------------------------- markup (XSS) guard
+
+def test_model_markup_is_stripped_before_it_leaves_the_server():
+    """A tag in the model's prose must not survive to the browser.
+
+    The panel is built with innerHTML, and the number guard checks figures, not
+    tags. Stripping happens server-side; the client escapes as a second layer.
+    """
+    strip = ai._strip_markup
+    assert "<script>" not in strip("Price 3982.69 <script>alert(1)</script>")
+    assert "onerror" not in strip('x <img src=y onerror="alert(1)">')
+    assert "<" not in strip("a <b>bold</b> b")
+    # An entity-encoded tag loses its angle brackets, so it can no longer be
+    # parsed as a tag. The bare word "script" is harmless text.
+    decoded = strip("&lt;script&gt;alert(1)&lt;/script&gt;")
+    assert "<" not in decoded and ">" not in decoded
+    assert "alert(1)" in decoded
+    # Ordinary prose is untouched.
+    plain = "The price is 3982.69 and the trend is down."
+    assert strip(plain) == plain
+    assert strip("") == "" and strip(None) is None
+
+
+def test_narrate_strips_markup_on_the_model_path():
+    """The served narrative goes through the stripper, not only the guard."""
+    import inspect
+    src = inspect.getsource(ai.narrate)
+    assert "_strip_markup(text)" in src
+
+
+def test_security_headers_are_sent():
+    """The page refuses to run a script that is not ours, and refuses framing."""
+    h = client.get("/").headers
+    assert "default-src 'self'" in h["content-security-policy"]
+    assert "script-src 'self'" in h["content-security-policy"]
+    # script-src must NOT allow inline script, or the CSP would not stop XSS.
+    assert "'unsafe-inline'" not in h["content-security-policy"].split("style-src")[0]
+    assert h["x-content-type-options"] == "nosniff"
+    assert h["x-frame-options"] == "DENY"
+
+
+def test_page_has_no_inline_handlers():
+    """CSP without 'unsafe-inline' for scripts requires no inline handlers."""
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text("utf-8")
+    assert "onclick=" not in html
+    assert 'src="/static/app.js"' in html
+
+
+# ------------------------------------------------------------- abuse guard
+
+def test_rate_limit_blocks_the_nth_plus_one_request(monkeypatch):
+    """The endpoint spends the owner's quota, so a runaway loop must be cut off.
+
+    The limit is per client IP. We drive the counter directly so the test does
+    not depend on how many calls the rest of the suite has already made.
+    """
+    monkeypatch.setattr(main, "RATE_LIMIT", 3)
+    main._hits.clear()
+    assert all(main._within_rate("1.2.3.4") for _ in range(3))
+    assert main._within_rate("1.2.3.4") is False
+    # A different client has its own budget.
+    assert main._within_rate("5.6.7.8") is True
+
+
+def test_rate_window_slides(monkeypatch):
+    """Old hits fall out of the window, so the limit is per minute, not forever."""
+    monkeypatch.setattr(main, "RATE_LIMIT", 1)
+    main._hits.clear()
+    assert main._within_rate("9.9.9.9") is True
+    assert main._within_rate("9.9.9.9") is False
+    # Age the recorded hit past the window.
+    main._hits["9.9.9.9"][0] -= 61
+    assert main._within_rate("9.9.9.9") is True
+
+
+def test_api_key_turns_away_a_direct_caller(monkeypatch):
+    """With a key configured, a script that sends no key is refused."""
+    monkeypatch.setattr(main, "API_KEY", "s3cret")
+    r = client.get("/api/analyze", params={"symbol": "EURUSD=X", "interval": "1h"})
+    assert r.status_code == 401
+
+
+def test_api_key_accepts_the_bundled_page(monkeypatch):
+    """The page's own fetch cannot send the key, so it is trusted by Sec-Fetch-Site.
+
+    Driven through the guard directly: the point is the header, not a live read.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    monkeypatch.setattr(main, "API_KEY", "s3cret")
+    main._hits.clear()
+    page = SimpleNamespace(headers={"sec-fetch-site": "same-origin"},
+                           client=SimpleNamespace(host="10.0.0.1"))
+    asyncio.run(main.guard(page))  # the page passes without the key
+    direct = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.2"))
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(main.guard(direct))
+    assert err.value.status_code == 401
+
+
+def test_bad_parameter_is_free(monkeypatch):
+    """A rejected request must not spend the caller's rate budget."""
+    monkeypatch.setattr(main, "RATE_LIMIT", 1)
+    main._hits.clear()
+    r = client.get("/api/analyze", params={"symbol": "EURUSD=X", "interval": "7s"})
+    assert r.status_code == 400
+    # The budget is untouched, so a valid request still goes through.
+    assert main._within_rate("testclient") is True
+
+
+# ------------------------------------------------------- degenerate inputs
+
+def test_zero_price_does_not_crash_the_engine():
+    """A broken read must degrade to 'no signal', not raise.
+
+    Dividing by price for the level-room rule crashed the whole read before the
+    `fatal` check ran. The honest output is NEUTRAL with a warning, never a
+    stack trace and never a fabricated direction.
+    """
+    s = signals.evaluate(_board(price=0))
+    assert s.direction == "NEUTRAL"
+    assert s.confidence == 0.0
+    assert any(w.code == "undefined_volatility" for w in s.warnings)
+
+
+def test_negative_price_is_not_traded():
+    """A negative price is nonsense; it must not produce a BUY."""
+    s = signals.evaluate(_board(price=-5))
+    assert s.direction == "NEUTRAL"
+    assert s.confidence == 0.0

@@ -213,6 +213,26 @@ def _allowed_figures(ind: dict, sig: dict) -> set[str]:
     return allowed
 
 
+def _strip_markup(text: str) -> str:
+    """Remove anything a browser would parse as markup from model prose.
+
+    The panel renders this text, so a tag that reaches the browser is a tag the
+    browser obeys. The client escapes it as well; this is the second layer, so
+    the payload is gone before it ever leaves the server. Angle brackets are
+    what make a tag, so nothing that needs them survives -- the prose has no
+    legitimate use for them.
+    """
+    if not text:
+        return text
+    # Drop anything that looks like a tag or an entity-encoded tag.
+    cleaned = re.sub(r"<[^>]*>", " ", text)
+    cleaned = re.sub(r"&lt;|&gt;|&#0*60;|&#0*62;|&#x0*3c;|&#x0*3e;", " ", cleaned, flags=re.I)
+    # Collapse the whitespace the removal can leave behind, keep paragraph breaks.
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _verify(text: str, ind: dict, sig: dict) -> str | None:
     """Return a rejection reason if the model's prose contradicts the facts.
 
@@ -320,7 +340,9 @@ async def narrate(symbol: str, interval: str, ind: dict, sig: dict, lang: str = 
                 # The model contradicted the engine. Keep the engine.
                 reasons.append(f"{model}: rejected — {reject}")
                 continue
-            return {"text": text, "model": model, "source": "model", "note": None}
+            # Verified against the facts; now strip anything a browser would run.
+            return {"text": _strip_markup(text), "model": model,
+                    "source": "model", "note": None}
 
     # Every model failed or contradicted the facts. Fall back to the computed sentence.
     note = _summarise_failures(reasons, lang)

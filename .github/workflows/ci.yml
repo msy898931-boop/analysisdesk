@@ -1,0 +1,57 @@
+name: ci
+
+# Run the suite on every push and pull request. Without this, a change that
+# breaks one of the tests still reaches production -- the tests only protect us
+# if something runs them. Lint and a dependency audit run alongside, so a
+# security regression is caught in the same place as a logic one.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov ruff mypy bandit pip-audit
+
+      - name: Tests
+        # Network tests are deselected: CI must not depend on a third party
+        # being up, or a red build would mean "Yahoo was slow", not "we broke it".
+        run: python -m pytest tests/ -q -m "not network" --cov=app --cov-report=term-missing
+
+      - name: Lint
+        run: ruff check app/ tests/ scripts/
+
+      - name: Types
+        run: mypy app/ --ignore-missing-imports
+
+      - name: Security scan
+        run: bandit -q -r app/ scripts/ -ll
+
+      - name: Dependency audit
+        run: pip-audit -r requirements.txt

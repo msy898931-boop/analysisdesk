@@ -75,7 +75,8 @@ def telegram(text: str) -> str:
         data=json.dumps({"chat_id": chat, "text": text}).encode(),
         headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        # The scheme is a literal https URL; nothing caller-supplied reaches it.
+        with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310  # nosec B310
             return "sent" if r.status == 200 else f"http {r.status}"
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         return f"failed: {type(e).__name__}"
