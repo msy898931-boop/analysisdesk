@@ -29,6 +29,13 @@ load_dotenv()
 app = FastAPI(title="AnalysisDesk", version="1.0.0")
 WEB = Path(__file__).resolve().parent.parent / "web"
 
+# Process-level counters for the diagnostics surface. `_served` counts responses
+# the middleware has seen; `_started` anchors uptime. Both are per-process, like
+# the rate counter, so a restart resets them -- /api/status says so rather than
+# letting a small number read as "idle" when it means "recently restarted".
+_started = time.time()
+_served = [0]
+
 # The desk renders server-supplied strings, so a tag that reaches the browser is
 # a tag the browser obeys. Two things stop that: the client escapes every value,
 # and this header refuses to run any script that did not come from our own
@@ -50,6 +57,7 @@ CSP = (
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
+    _served[0] += 1
     response.headers["Content-Security-Policy"] = CSP
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -159,6 +167,38 @@ INTERVALS = {
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "model": ai.MODEL, "model_key": bool(os.getenv("GROQ_API_KEY"))}
+
+
+@app.get("/api/status")
+async def status():
+    """Diagnostics: what this process is actually doing, not just that it is up.
+
+    /api/health answers "is it alive". This answers the questions an operator
+    asks next -- how long has it run, how much has it served, is the model path
+    live, is the cache growing like a scan. Every field is process-local and
+    resets on restart; `uptime_s` is the tell, so a small `served` reads as
+    "recently restarted", never as "nothing happened".
+    """
+    return {
+        "status": "ok",
+        "version": app.version,
+        # Render sets RENDER_GIT_COMMIT to the deployed revision. Exposing it
+        # lets the watchdog answer "is the thing I pushed the thing that is
+        # running" -- a green check on push that does not prove the deploy
+        # landed would be the same kind of false all-clear this desk refuses.
+        "commit": (os.getenv("RENDER_GIT_COMMIT", "") or "")[:12],
+        "uptime_s": round(time.time() - _started, 1),
+        "served": _served[0],
+        "model": ai.MODEL,
+        "model_key": bool(os.getenv("GROQ_API_KEY")),
+        "models": ai.MODELS,
+        "cache": market.cache_stats(),
+        "rate_limit_per_min": RATE_LIMIT,
+        "api_key_required": bool(API_KEY),
+        # The window is per-process, so this is the number of distinct callers
+        # seen in the last minute -- the same set the limit is applied to.
+        "tracked_clients": len(_hits),
+    }
 
 
 @app.get("/api/symbols")

@@ -8,13 +8,25 @@ name: deploy-watch
 # service every 30 minutes and burn the 750-hour monthly allowance -- the check
 # would destroy the thing it measures.
 #
+# Why there is also a push trigger: GitHub's `schedule` is best-effort and, in
+# practice, heavily throttled -- this workflow was added with a */30 cron and
+# produced ZERO scheduled runs while a sibling repo's */5 cron fired only every
+# 4-6 hours. A watchdog that never runs is silent in the same way a healthy
+# service is. So every deploy is verified by the event that actually fires
+# reliably (push), and the schedule stays as a best-effort backstop. The probe
+# never wakes the service, so running it more often costs nothing.
+#
 # Sleeping is normal on the free plan, so it is NOT alerted. The job alerts only
-# when the state cannot be determined, or when the app is awake but unhealthy.
+# when the state cannot be determined, when the app is awake but unhealthy, or
+# when the watchdog itself has gone quiet (check_deploy --gap-threshold).
+#
 # Silence is never reported as an all-clear.
 
 on:
   schedule:
     - cron: "*/30 * * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       force_alert:
@@ -51,7 +63,22 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p .watchdog
-          python3 scripts/check_deploy.py --log .watchdog/readings.jsonl --json \
+          # On push, prove the revision that was just pushed is the one running:
+          # a green check that only says "something is serving" would be the same
+          # false all-clear this desk refuses. On a schedule there is nothing to
+          # prove, so no --expect-commit and the probe stays zero-wake.
+          EXPECT=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # A Docker image build on Render takes minutes, so wait generously
+            # before concluding the deploy has not landed.
+            EXPECT="--expect-commit ${{ github.sha }} --wait-seconds 600"
+          fi
+          # --gap-threshold 12: GitHub's throttled cron makes gaps of several
+          # hours normal, so a tighter threshold would cry wolf on a healthy
+          # schedule and train the reader to ignore it. 12h is the line between
+          # "throttled but alive" and "the watchdog is actually dead".
+          python3 scripts/check_deploy.py --log .watchdog/readings.jsonl \
+            --gap-threshold 12 $EXPECT --json \
             > .watchdog/last.json || echo "probe reported a problem"
           cat .watchdog/last.json
           python3 - <<'PY' >> "$GITHUB_OUTPUT"

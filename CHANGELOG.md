@@ -104,10 +104,36 @@ plain: what changed, and why it mattered.
   Docker base image. The lock check turns a pip bump into a red build until the
   lock is regenerated, so the two cannot drift apart quietly.
 
+### Monitoring
+
+- **`/api/status`** — a diagnostics endpoint beside `/api/health`. Health says
+  "alive"; this says how long the process has run, how many requests it has
+  served, the revision actually deployed (`RENDER_GIT_COMMIT`), whether the
+  model path is live, the price-cache size, and the distinct clients in the rate
+  window. Every field is process-local and resets on restart, and `uptime_s`
+  makes that visible rather than letting a small number read as "idle".
+- **The watcher no longer relies on the schedule alone.** `deploy-watch.yml`
+  gained a `push` trigger. GitHub's `schedule` is best-effort and, in practice,
+  throttled: this workflow was added with a `*/30` cron and produced **zero
+  scheduled runs**, while a sibling repo's `*/5` cron fired only every 4–6 hours.
+  A watchdog that never runs is silent in exactly the way a healthy service is,
+  so the reliable event (push) now drives it and the cron stays as a backstop.
+- **The watcher watches itself.** `check_deploy.py --gap-threshold` fails when
+  the log's newest reading is older than the threshold (12h in CI): a stopped
+  schedule is reported, not mistaken for an all-clear. An empty log — a fresh
+  install — is deliberately *not* an alarm.
+- **A push check proves the deploy landed.** On push, `check_deploy.py
+  --expect-commit <sha>` polls `/api/status` until the running revision equals
+  the pushed one, or reports what it saw instead. A green run that only says
+  "something is serving" would be the same false all-clear this desk refuses.
+
 ### Tests
 
-- Coverage 67% → **87%**; the suite grew from 77 to **128 tests** (plus 8 UI
-  tests under node). New this pass: every market venue and every failure path
-  (`market.py` 49% → 99%), the browser helpers, the accessibility and mobile
-  rules, and two tests that pin the single-worker rate-limit scope so raising it
-  is a deliberate act.
+- Coverage 67% → **87%** → **95%**; the suite grew from 77 to **128** to
+  **170 tests** (plus 8 UI tests under node). New this pass: every market venue
+  and every failure path (`market.py` 49% → 99%), the browser helpers, the
+  accessibility and mobile rules, two tests that pin the single-worker
+  rate-limit scope, the API layer end to end (`main.py` 74% → 98%), the model
+  fallback chain model by model (`ai.py` 77% → 89%), and the monitoring
+  surface — `/api/status`, the lapsed-watchdog detector, and the
+  deploy-landed check.

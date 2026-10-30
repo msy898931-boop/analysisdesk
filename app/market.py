@@ -81,6 +81,16 @@ def _cache_put(key: tuple[str, str], value: tuple[float, Series]) -> None:
     _cache[key] = value
 
 
+def cache_stats() -> dict:
+    """Report the cache's size for the diagnostics surface.
+
+    How full the cache is tells an operator whether the desk is serving a
+    handful of watched symbols or being walked through invented ones -- the
+    latter is the shape of the abuse the cap exists to bound.
+    """
+    return {"entries": len(_cache), "max": _CACHE_MAX}
+
+
 async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False) -> Series:
     if interval not in INTERVALS:
         raise MarketDataError(f"unsupported interval: {interval}")

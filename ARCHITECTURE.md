@@ -131,6 +131,26 @@ rounded by the one rule in `indicators`.
   the image and waits for `/api/health`, because "green in CI" and "the image
   builds" are two facts.
 
+### Monitoring the deployment (without waking it)
+
+- **`/api/status`** is the diagnostics surface: uptime, requests served, the
+  deployed revision (`RENDER_GIT_COMMIT`), model + key, cache size, and the
+  number of distinct clients in the rate window. Every field is process-local
+  and resets on restart; `uptime_s` is what tells "recently restarted" from
+  "nothing happened". `/api/health` only says "alive".
+- **`scripts/check_deploy.py`** reads `/robots.txt` to learn the sleep state
+  without waking the service — the one probe that observes without intervening.
+  It also watches itself: a last reading older than `--gap-threshold` hours
+  means the schedule stopped firing, and that is alerted, because a watchdog
+  that never runs is silent in exactly the way a healthy service is.
+- **The watcher runs on push** (`deploy-watch.yml`), not only on a cron.
+  GitHub's `schedule` is best-effort and heavily throttled — this workflow had a
+  `*/30` cron and produced zero scheduled runs, while a sibling repo's `*/5`
+  cron fired every 4–6 hours. The push trigger is the reliable event; the cron
+  stays as a backstop. On push the check also waits for the pushed revision to
+  become the running one, so a green run proves the deploy landed rather than
+  that "something is serving".
+
 ## Honest limits
 
 Stated here rather than left for a reader to discover:
@@ -146,6 +166,13 @@ Stated here rather than left for a reader to discover:
   a rate limit, the desk degrades to the computed sentence and says why.
 - **`HEAD`/`GET` on an unknown symbol** returns "could not read", never a guess.
 - **The Free instance sleeps**, so the first request after idle is slow.
+- **Monitoring is a heartbeat, not full observability.** There is no metrics
+  backend, no tracing, and no error tracking (Sentry or similar): a request that
+  fails after the probe passes is invisible until someone reads the logs. The
+  watcher proves the service answers and that the deployed revision is the one
+  pushed; it does not measure latency, error rate, or a slow dependency. The
+  probe also runs on push and on a throttled cron, so detection can lag a real
+  outage by hours — that is stated here rather than implied to be instant.
 
 ## Testing philosophy
 

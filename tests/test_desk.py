@@ -2097,3 +2097,119 @@ def test_the_lock_is_compiled_for_the_lowest_supported_python():
         f"the lock must be compiled for the floor {lowest}; regenerate it with "
         f"`uv pip compile requirements.txt --python-version {lowest} --generate-hashes`"
     )
+
+
+# ---------------------------------------------------------------- monitoring
+
+def test_status_reports_what_the_process_is_doing(monkeypatch):
+    """/api/status answers the questions /api/health does not.
+
+    Health says "alive"; an operator's next questions are how long, how much
+    served, is the model path live, is the cache filling like a scan. Every
+    field is process-local, so uptime is what separates "recently restarted"
+    from "nothing happened".
+    """
+    from app import main
+
+    monkeypatch.setenv("RENDER_GIT_COMMIT", "abc123def456789")
+    body = TestClient(main.app).get("/api/status").json()
+    assert body["status"] == "ok"
+    assert body["version"] == main.app.version
+    assert body["commit"] == "abc123def456"      # truncated to 12
+    assert isinstance(body["uptime_s"], (int, float)) and body["uptime_s"] >= 0
+    # The cache is process-wide and earlier tests may have filled it, so assert
+    # the shape and the bound, not a specific count.
+    assert body["cache"]["max"] == market._CACHE_MAX
+    assert 0 <= body["cache"]["entries"] <= market._CACHE_MAX
+    assert body["rate_limit_per_min"] == main.RATE_LIMIT
+    assert body["api_key_required"] in (True, False)
+    assert set(body["models"]) == set(main.ai.MODELS)
+
+
+def test_status_commit_is_empty_when_render_does_not_set_it(monkeypatch):
+    """Not on Render -> no revision to claim. An empty string, never a guess."""
+    from app import main
+
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    body = TestClient(main.app).get("/api/status").json()
+    assert body["commit"] == ""
+
+
+def test_cache_stats_reports_size_and_cap():
+    """The cache size is what tells an operator a scan from normal use."""
+    stats = market.cache_stats()
+    assert set(stats) == {"entries", "max"}
+    assert stats["max"] == market._CACHE_MAX
+    assert stats["entries"] <= stats["max"]
+
+
+def test_watch_gap_is_not_an_alarm_on_a_fresh_install():
+    """An empty log means 'no history yet', not 'the watchdog is dead'.
+
+    The very first run has nothing to compare against; crying wolf there would
+    train the reader to ignore the alert.
+    """
+    gap = _WATCH["check_deploy"].watch_gap
+    ok, reason = gap([], now=1_000_000, max_gap_s=12 * 3600)
+    assert ok is True and "first run" in reason
+
+
+def test_watch_gap_flags_a_watchdog_that_stopped_firing():
+    """A probe that never runs is silent exactly like a healthy service.
+
+    This is the whole point: the schedule stopped, and silence must not pass
+    for an all-clear. The reading is 20h old against a 12h threshold.
+    """
+    gap = _WATCH["check_deploy"].watch_gap
+    now = 1_000_000
+    ok, reason = gap([{"ts": now - 20 * 3600}], now=now, max_gap_s=12 * 3600)
+    assert ok is False
+    assert "20.0h" in reason and "not firing" in reason
+
+
+def test_watch_gap_uses_the_newest_reading_not_the_oldest():
+    """An old entry must not mask a recent one -- the newest line is the truth."""
+    gap = _WATCH["check_deploy"].watch_gap
+    now = 1_000_000
+    readings = [{"ts": now - 30 * 3600}, {"ts": now - 600}]
+    ok, _ = gap(readings, now=now, max_gap_s=12 * 3600)
+    assert ok is True
+
+
+def test_deployed_commit_is_none_when_status_is_unreachable(monkeypatch):
+    """No /api/status (older deploy, or asleep) -> None, never a fabricated sha."""
+    cd = _WATCH["check_deploy"]
+    monkeypatch.setattr(cd, "fetch", lambda url: (404, '{"detail":"Not Found"}'))
+    assert cd.deployed_commit("https://example.invalid") is None
+
+
+def test_await_commit_passes_once_the_pushed_revision_appears(monkeypatch):
+    """A push check must prove the pushed revision is the one running."""
+    cd = _WATCH["check_deploy"]
+    monkeypatch.setattr(cd, "fetch", lambda url: (200, json.dumps({"commit": "cafebabe1234"})))
+    ok, reason = cd.await_commit("https://example.invalid", "cafebabe1234ffff",
+                                 timeout=5, interval=0.01)
+    assert ok is True and "cafebabe1234" in reason
+
+
+def test_await_commit_reports_a_deploy_that_never_landed(monkeypatch):
+    """A green run that only says 'something is serving' is a false all-clear.
+
+    Here the running revision differs from the pushed one and the budget runs
+    out, so the check must fail and name both revisions.
+    """
+    cd = _WATCH["check_deploy"]
+    monkeypatch.setattr(cd, "fetch", lambda url: (200, json.dumps({"commit": "oldoldoldold"})))
+    ok, reason = cd.await_commit("https://example.invalid", "newnewnewnew",
+                                 timeout=0.05, interval=0.01)
+    assert ok is False
+    assert "oldoldoldold" in reason and "newnewnewnew" in reason
+
+
+def test_await_commit_says_so_when_it_cannot_read_the_revision(monkeypatch):
+    """An unreadable /api/status is reported as such, not as a mismatch."""
+    cd = _WATCH["check_deploy"]
+    monkeypatch.setattr(cd, "fetch", lambda url: (None, ""))
+    ok, reason = cd.await_commit("https://example.invalid", "abcabcabcabc",
+                                 timeout=0.05, interval=0.01)
+    assert ok is False and "did not answer" in reason
