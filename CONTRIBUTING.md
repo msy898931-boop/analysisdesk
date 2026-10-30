@@ -8,7 +8,7 @@ report an unknown as a known**. A wrong answer stated confidently is worse than
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 pip install pytest pytest-cov ruff mypy bandit pip-audit
 ```
 
@@ -28,7 +28,7 @@ python -m pytest tests/                    # the same plus live-API tests
 ruff check app/ tests/ scripts/
 mypy app/ --ignore-missing-imports
 bandit -q -r app/ scripts/ -ll
-pip-audit -r requirements.txt
+pip-audit -r requirements.lock
 ```
 
 ## The two test classes
@@ -53,6 +53,17 @@ Add the marker to any test that hits a live endpoint.
   goes through `esc()` in `web/app.js`. The CSP is the second line, not the first.
 - **Comment the why, not the what.** A comment earns its place by explaining a
   non-obvious decision, an invariant, or a deliberate trade-off.
+
+## Dependencies
+
+`requirements.txt` holds the ranges; `requirements.lock` is the resolved,
+hash-pinned set the image installs. After changing a range, regenerate it:
+
+```bash
+uv pip compile requirements.txt --python-version 3.12 \
+  --generate-hashes --no-emit-index-url --no-header -o requirements.lock
+python scripts/check_lock.py        # must pass before you push
+```
 
 ## Style
 

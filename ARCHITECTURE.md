@@ -121,6 +121,12 @@ rounded by the one rule in `indicators`.
   correctness.
 - `GROQ_API_KEY` is declared in the blueprint with `sync: false` — set in the
   dashboard, never in git. Without it the desk still works (computed prose).
+- **The image installs `requirements.lock`**, not `requirements.txt`: the lock is
+  the resolved, hash-pinned set, installed with `--require-hashes`, so a rebuild
+  produces the same bytes and a substituted package is refused. `requirements.txt`
+  declares the ranges; `scripts/check_lock.py` fails the build if the two drift
+  (a bumped range with a stale pin). A `docker` CI job builds the image and waits
+  for `/api/health`, because "green in CI" and "the image builds" are two facts.
 
 ## Honest limits
 

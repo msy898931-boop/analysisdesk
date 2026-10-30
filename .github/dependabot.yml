@@ -1,0 +1,32 @@
+# Dependabot watches the three places a dependency can go stale. A security
+# update that nobody is told about is not a security update.
+#
+# Note on pip: Dependabot reads requirements.txt and opens a PR bumping the
+# range there. It does not understand requirements.lock (that is a uv-compiled,
+# hash-pinned artifact), so the PR arrives with the lock untouched -- and CI's
+# `python scripts/check_lock.py` then fails, which is the intended signal to
+# regenerate the lock in the same PR. The check is what closes that loop; a
+# reviewer sees a red build rather than a silently mismatched lock.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies

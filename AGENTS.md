@@ -18,7 +18,7 @@ python -m pytest tests/                    # adds live-API tests (need network)
 ruff check app/ tests/ scripts/
 mypy app/ --ignore-missing-imports
 bandit -q -r app/ scripts/ -ll
-pip-audit -r requirements.txt
+pip-audit -r requirements.lock
 python -m uvicorn app.main:app --port 12000
 ```
 

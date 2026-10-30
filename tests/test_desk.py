@@ -9,6 +9,8 @@ import asyncio
 import json
 import math
 import re
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1961,3 +1963,114 @@ def test_narrate_returns_prose_in_the_requested_language(monkeypatch):
     b = _ai_board()
     ar = asyncio.run(ai.narrate("EURUSD=X", "1h", b, _ai_sig(b), "ar"))
     assert any("\u0600" <= ch <= "\u06ff" for ch in ar["text"])  # has Arabic
+
+
+def test_the_lock_covers_every_direct_dependency():
+    """requirements.lock must pin the same direct deps as requirements.txt.
+
+    The lock is what the image installs, so a direct dependency missing from it
+    would be absent in production while the tests -- which install from
+    pyproject -- still passed. Compare the top-level names, ignoring versions.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    direct = set()
+    for raw in (root / "requirements.txt").read_text("utf-8").splitlines():
+        clean = raw.split("#")[0].strip()
+        if clean:
+            direct.add(clean.split(">=")[0].split("[")[0].strip().lower().replace("-", "_"))
+    locked = set()
+    for raw in (root / "requirements.lock").read_text("utf-8").splitlines():
+        if "==" in raw and not raw.startswith((" ", "#")):
+            locked.add(raw.split("==")[0].strip().lower().replace("-", "_"))
+    assert direct <= locked, f"missing from the lock: {direct - locked}"
+
+
+def test_the_lock_pins_every_package_with_a_hash():
+    """A lock with a floating version, or no hash, is not a lock."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    lines = (root / "requirements.lock").read_text("utf-8").splitlines()
+    pinned = [ln for ln in lines if "==" in ln and not ln.startswith((" ", "#"))]
+    assert pinned, "the lock is empty"
+    for ln in pinned:
+        assert "==" in ln, f"unpinned: {ln}"
+    # Every package block must carry at least one hash.
+    text = "\n".join(lines)
+    assert text.count("--hash=sha256:") >= len(pinned)
+    for ln in lines:
+        assert not ln.strip().startswith((">=", "~=", "<")), f"floating spec: {ln}"
+
+
+def test_the_dockerfile_installs_from_the_lock_with_hashes():
+    """The image must install the locked, hashed set -- not the loose list."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    df = (root / "Dockerfile").read_text("utf-8")
+    assert "--require-hashes" in df
+    assert "requirements.lock" in df
+    assert "-r requirements.txt" not in df
+
+
+def test_check_lock_passes_on_the_real_files():
+    """The lock checker must accept the lock we ship."""
+    sys_path = str(Path(__file__).resolve().parent.parent / "scripts")
+    import importlib
+
+    sys.path.insert(0, sys_path)
+    try:
+        mod = importlib.import_module("check_lock")
+        report = mod.check()
+    finally:
+        sys.path.remove(sys_path)
+    assert report["ok"], report["problems"]
+
+
+def test_check_lock_flags_a_version_outside_the_declared_range(tmp_path):
+    """The exact drift the checker exists for: a bumped range, a stale pin."""
+    sys_path = str(Path(__file__).resolve().parent.parent / "scripts")
+    import importlib
+
+    sys.path.insert(0, sys_path)
+    try:
+        mod = importlib.import_module("check_lock")
+        (tmp_path / "requirements.txt").write_text("fastapi>=99.0\n", "utf-8")
+        (tmp_path / "requirements.lock").write_text(
+            "fastapi==0.162.0 \\\n    --hash=sha256:" + "a" * 64 + "\n", "utf-8")
+        report = mod.check(tmp_path)
+    finally:
+        sys.path.remove(sys_path)
+    assert not report["ok"]
+    assert any("does not satisfy" in p for p in report["problems"])
+
+
+def test_check_lock_flags_an_unhashed_pin(tmp_path):
+    sys_path = str(Path(__file__).resolve().parent.parent / "scripts")
+    import importlib
+
+    sys.path.insert(0, sys_path)
+    try:
+        mod = importlib.import_module("check_lock")
+        (tmp_path / "requirements.txt").write_text("fastapi>=0.115\n", "utf-8")
+        (tmp_path / "requirements.lock").write_text("fastapi==0.162.0\n", "utf-8")
+        report = mod.check(tmp_path)
+    finally:
+        sys.path.remove(sys_path)
+    assert not report["ok"]
+    assert any("no hash" in p for p in report["problems"])
+
+
+def test_check_lock_treats_a_missing_file_as_a_failure(tmp_path):
+    sys_path = str(Path(__file__).resolve().parent.parent / "scripts")
+    import importlib
+
+    sys.path.insert(0, sys_path)
+    try:
+        mod = importlib.import_module("check_lock")
+        report = mod.check(tmp_path)
+    finally:
+        sys.path.remove(sys_path)
+    assert not report["ok"]

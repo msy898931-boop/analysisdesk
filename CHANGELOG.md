@@ -83,6 +83,23 @@ plain: what changed, and why it mattered.
   stack under 560px.
 - **A `ui` CI job** runs the browser helpers under `node --test`.
 
+### Engineering
+
+- **`requirements.lock`** — the resolved, hash-pinned dependency set, and the
+  thing the image now installs (`--require-hashes`). Before this, `>=` ranges
+  meant two builds of the same commit could install different bytes, and the
+  image that passed CI was not provably the image that shipped.
+- **`scripts/check_lock.py`** — fails when the lock pins a version the declared
+  range no longer allows, when a direct dependency is missing from it, or when
+  any entry is unpinned or unhashed. Deterministic on purpose: a re-resolve-and-
+  diff check would go red on every routine upstream release and be ignored.
+- **A `docker` CI job** builds the image and waits for `/api/health`, then
+  asserts the container is not root. "Green in CI" and "the image builds" were
+  two facts; now the build and the healthcheck are proven before a push.
+- **`.github/dependabot.yml`** — weekly updates for pip, GitHub Actions, and the
+  Docker base image. The lock check turns a pip bump into a red build until the
+  lock is regenerated, so the two cannot drift apart quietly.
+
 ### Tests
 
 - Coverage 67% → **87%**; the suite grew from 77 to **128 tests** (plus 8 UI

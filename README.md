@@ -116,9 +116,13 @@ docker run -p 8080:8080 -e PORT=8080 -e GROQ_API_KEY=... analysisdesk
 ## التشغيل / Running
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.lock      # the pinned, hashed set the image uses
 uvicorn app.main:app --host 0.0.0.0 --port 12000
 ```
+
+`requirements.txt` declares the ranges; `requirements.lock` is the resolved,
+hash-pinned form of them and is what the Docker image installs. `python
+scripts/check_lock.py` proves the two still agree.
 
 ثم افتح `http://localhost:12000`.
 
@@ -215,7 +219,7 @@ python -m pytest tests/                    # مع اختبارات الشبكة 
 ruff check app/ tests/ scripts/
 mypy app/ --ignore-missing-imports
 bandit -q -r app/ scripts/ -ll
-pip-audit -r requirements.txt
+pip-audit -r requirements.lock
 ```
 
 كلها بتشتغل بالـCI على Python 3.11 و3.12 (`.github/workflows/ci.yml`).

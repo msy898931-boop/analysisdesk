@@ -7,8 +7,14 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Dependencies first so the layer is cached across code-only rebuilds.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+#
+# requirements.lock is the resolved, hash-pinned form of requirements.txt, so a
+# rebuild months from now installs the same bytes it installs today. Without it
+# a transitive dependency can move under us and the image that passes CI is not
+# the image that ships. --require-hashes makes pip refuse anything that does not
+# match, which is also what makes the lock a supply-chain check and not a note.
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY app ./app
 COPY web ./web
