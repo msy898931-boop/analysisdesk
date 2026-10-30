@@ -18,13 +18,38 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .indicators import price_decimals
+
 
 def _finite(v) -> bool:
     return isinstance(v, (int, float)) and math.isfinite(float(v))
 
 
 def _r(v: float, d: int = 5) -> float:
-    return round(float(v), d) if _finite(v) else 0.0
+    """Round a computed price the same way the API and the prose do.
+
+    This used a fixed 5 decimals, so gold's stop-loss shipped as 3997.5179 while
+    every other figure on the card was clean. price_decimals is the one rule.
+    """
+    if not _finite(v):
+        return 0.0
+    f = float(v)
+    return round(f, min(price_decimals(f), d))
+
+
+def _f(v, extra: int = 0) -> str:
+    """Format a value inside a rule sentence, matching the API's precision.
+
+    The sentences used a hardcoded .4f, so gold read 4003.5100 in the rule text
+    while the API reported 4003.51. Both now ask indicators.price_decimals.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if not math.isfinite(f):
+        return "0"
+    return f"{f:.{min(price_decimals(f) + extra, 6)}f}"
 
 
 @dataclass
@@ -86,12 +111,12 @@ def evaluate(ind: dict) -> Signal:
     # --- Trend: EMA stack -------------------------------------------------
     if price > ind["ema20"] > ind["ema50"]:
         rules.append(_rule("trend_ema_stack", "bullish", 2,
-                           f"price {price:.4f} > EMA20 {ind['ema20']:.4f} > EMA50 {ind['ema50']:.4f}",
-                           f"السعر {price:.4f} > EMA20 {ind['ema20']:.4f} > EMA50 {ind['ema50']:.4f}"))
+                           f"price {_f(price)} > EMA20 {_f(ind['ema20'])} > EMA50 {_f(ind['ema50'])}",
+                           f"السعر {_f(price)} > EMA20 {_f(ind['ema20'])} > EMA50 {_f(ind['ema50'])}"))
     elif price < ind["ema20"] < ind["ema50"]:
         rules.append(_rule("trend_ema_stack", "bearish", 2,
-                           f"price {price:.4f} < EMA20 {ind['ema20']:.4f} < EMA50 {ind['ema50']:.4f}",
-                           f"السعر {price:.4f} < EMA20 {ind['ema20']:.4f} < EMA50 {ind['ema50']:.4f}"))
+                           f"price {_f(price)} < EMA20 {_f(ind['ema20'])} < EMA50 {_f(ind['ema50'])}",
+                           f"السعر {_f(price)} < EMA20 {_f(ind['ema20'])} < EMA50 {_f(ind['ema50'])}"))
     else:
         rules.append(_rule("trend_ema_stack", "neutral", 0,
                            "EMA20/EMA50 are not stacked in a clear order",
@@ -100,22 +125,22 @@ def evaluate(ind: dict) -> Signal:
     # --- Long-term filter -------------------------------------------------
     if price > ind["ema200"]:
         rules.append(_rule("long_term_filter", "bullish", 1,
-                           f"above EMA200 {ind['ema200']:.4f}",
-                           f"فوق EMA200 عند {ind['ema200']:.4f}"))
+                           f"above EMA200 {_f(ind['ema200'])}",
+                           f"فوق EMA200 عند {_f(ind['ema200'])}"))
     else:
         rules.append(_rule("long_term_filter", "bearish", 1,
-                           f"below EMA200 {ind['ema200']:.4f}",
-                           f"تحت EMA200 عند {ind['ema200']:.4f}"))
+                           f"below EMA200 {_f(ind['ema200'])}",
+                           f"تحت EMA200 عند {_f(ind['ema200'])}"))
 
     # --- Momentum: MACD ---------------------------------------------------
     if ind["macd_hist"] > 0 and ind["macd"] > ind["macd_signal"]:
         rules.append(_rule("macd", "bullish", 2,
-                           f"MACD {ind['macd']:.4f} above signal {ind['macd_signal']:.4f}",
-                           f"MACD عند {ind['macd']:.4f} فوق الإشارة {ind['macd_signal']:.4f}"))
+                           f"MACD {_f(ind['macd'])} above signal {_f(ind['macd_signal'])}",
+                           f"MACD عند {_f(ind['macd'])} فوق الإشارة {_f(ind['macd_signal'])}"))
     elif ind["macd_hist"] < 0 and ind["macd"] < ind["macd_signal"]:
         rules.append(_rule("macd", "bearish", 2,
-                           f"MACD {ind['macd']:.4f} below signal {ind['macd_signal']:.4f}",
-                           f"MACD عند {ind['macd']:.4f} تحت الإشارة {ind['macd_signal']:.4f}"))
+                           f"MACD {_f(ind['macd'])} below signal {_f(ind['macd_signal'])}",
+                           f"MACD عند {_f(ind['macd'])} تحت الإشارة {_f(ind['macd_signal'])}"))
     else:
         rules.append(_rule("macd", "neutral", 0,
                            "MACD and its signal are crossing",
@@ -169,12 +194,12 @@ def evaluate(ind: dict) -> Signal:
     room_down = (price - ind["support"]) / price
     if room_up > room_down * 1.5:
         rules.append(_rule("level_room", "bullish", 1,
-                           f"more room up to {ind['resistance']:.4f} than down to {ind['support']:.4f}",
-                           f"مساحة أكبر صعوداً حتى {ind['resistance']:.4f} من الهبوط حتى {ind['support']:.4f}"))
+                           f"more room up to {_f(ind['resistance'])} than down to {_f(ind['support'])}",
+                           f"مساحة أكبر صعوداً حتى {_f(ind['resistance'])} من الهبوط حتى {_f(ind['support'])}"))
     elif room_down > room_up * 1.5:
         rules.append(_rule("level_room", "bearish", 1,
-                           f"more room down to {ind['support']:.4f} than up to {ind['resistance']:.4f}",
-                           f"مساحة أكبر هبوطاً حتى {ind['support']:.4f} من الصعود حتى {ind['resistance']:.4f}"))
+                           f"more room down to {_f(ind['support'])} than up to {_f(ind['resistance'])}",
+                           f"مساحة أكبر هبوطاً حتى {_f(ind['support'])} من الصعود حتى {_f(ind['resistance'])}"))
     else:
         rules.append(_rule("level_room", "neutral", 0,
                            "price sits mid-range between the levels",
@@ -231,9 +256,9 @@ def evaluate(ind: dict) -> Signal:
             target = price + 3 * atr
             warnings.append(Warning(
                 "thin_upside",
-                f"nearest resistance {ind['resistance']:.4f} is closer than 2×ATR — "
+                f"nearest resistance {_f(ind['resistance'])} is closer than 2×ATR — "
                 "target projected from volatility instead, and this trade has thin upside room",
-                f"أقرب مقاومة {ind['resistance']:.4f} أقرب من ضعف ATR — "
+                f"أقرب مقاومة {_f(ind['resistance'])} أقرب من ضعف ATR — "
                 "حُسب الهدف من التقلب بدلاً منها، والمساحة الصاعدة ضيقة",
             ))
     elif direction == "SELL":
@@ -244,9 +269,9 @@ def evaluate(ind: dict) -> Signal:
             target = price - 3 * atr
             warnings.append(Warning(
                 "thin_downside",
-                f"nearest support {ind['support']:.4f} is closer than 2×ATR — "
+                f"nearest support {_f(ind['support'])} is closer than 2×ATR — "
                 "target projected from volatility instead, and this trade has thin downside room",
-                f"أقرب دعم {ind['support']:.4f} أقرب من ضعف ATR — "
+                f"أقرب دعم {_f(ind['support'])} أقرب من ضعف ATR — "
                 "حُسب الهدف من التقلب بدلاً منه، والمساحة الهابطة ضيقة",
             ))
     else:

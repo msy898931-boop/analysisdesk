@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -687,3 +688,37 @@ def test_guard_accepts_the_rounded_price_it_shows():
     sheet = ai._sheet_text(ind, sig)
     for tok in ai._figures(sheet):
         assert ai._verify(f"value {tok}", ind, sig) is None, tok
+
+
+# ---------- signal output must round by the same rule as the API and the prose
+
+def _sig_board(price, ema20, ema50, ema200):
+    return {"price": price, "ema20": ema20, "ema50": ema50, "ema200": ema200,
+            "macd": -12.7632, "macd_signal": -10.1964, "macd_hist": -2.5668,
+            "support": 3970.39, "resistance": 4024.46, "rsi": 29.17,
+            "stoch_k": 13.98, "stoch_d": 20.0, "atr": 12.7, "atr_pct": 0.319,
+            "bb_position": 0.04, "bb_upper": 4037.82, "bb_lower": 3975.73,
+            "candles": 500, "prev_close": price, "change_pct": 0.0}
+
+
+def test_signal_levels_carry_no_float_tail_for_large_prices():
+    """Gold's stop-loss shipped as 3997.5179 while the card's other numbers were clean."""
+    sig = signals.signal_dict(signals.evaluate(_sig_board(3978.5, 4003.51, 4018.39, 4039.89)))
+    for key in ("entry", "stop_loss", "take_profit"):
+        v = sig[key]
+        assert round(v, 2) == v, f"{key}={v!r} still has a tail"
+
+
+def test_signal_levels_keep_fx_precision():
+    """EUR/USD must not be over-rounded by the large-price rule."""
+    sig = signals.signal_dict(signals.evaluate(_sig_board(1.11982, 1.1183, 1.11693, 1.11834)))
+    assert round(sig["stop_loss"], 5) == sig["stop_loss"]
+    assert sig["stop_loss"] != round(sig["stop_loss"], 2)
+
+
+def test_rule_sentences_use_the_shared_precision():
+    """The rule text said EMA20 4003.5100 while the API said 4003.51."""
+    sig = signals.signal_dict(signals.evaluate(_sig_board(3978.5, 4003.51, 4018.39, 4039.89)))
+    for r in sig["rules"]:
+        for blob in (r["detail_en"], r["detail_ar"]):
+            assert not re.search(r"\d\.\d{5,}", blob), f"tail in {r['name']}: {blob}"
