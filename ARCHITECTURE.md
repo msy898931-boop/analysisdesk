@@ -188,12 +188,13 @@ rounded by the one rule in `indicators`.
 Stated here rather than left for a reader to discover:
 
 - **The backtest is a record, not a promise — and the record is negative.** On
-  EURUSD 1h the engine's expectancy is ≈ −0.17R over 152 trades. The desk prints
-  that instead of a favourable slice. Ambiguous bars resolve against the trade
-  (the stop is checked before the target); the optimistic rule — target first —
-  is how a backtest lies. The sample size and the missing costs (spread,
-  slippage, fees) are on the result's face via `CAVEATS`. A small sample is
-  flagged, not dressed up.
+  EURUSD 1h, sampling every 10th bar, the engine's expectancy is on the order of
+  **−0.04R** — negative, and the desk prints that instead of a favourable slice.
+  The exact figure moves with the data, so the endpoint, not this line, is the
+  authority. Ambiguous bars resolve against the trade (the stop is checked
+  before the target); the optimistic rule — target first — is how a backtest
+  lies. The sample size and the missing costs (spread, slippage, fees) are on
+  the result's face via `CAVEATS`. A small sample is flagged, not dressed up.
 - **The news surface is headlines only.** RSS feeds carry a title, a link, a
   publisher, and a time — no body text. So the desk cannot read the news; it can
   only list headlines. It never claims sentiment or impact. A feed that fails is

@@ -1,8 +1,12 @@
 # Render blueprint for AnalysisDesk.
 #
 # Free plan note: the instance sleeps after ~15 minutes idle and cold-starts on
-# the next request. Nothing is persisted, and the app keeps no state on disk
-# (caches live in memory only), so a cold start costs latency, not correctness.
+# the next request. The cache and the rate limiter live in memory, so a cold
+# start costs latency, not correctness. Alert subscriptions are written to a
+# SQLite file on the container disk (DESK_DATA_DIR, default data/); with no
+# mounted disk on the free plan that file is lost on redeploy/restart, so
+# /api/status reports store.durable:false. Mount a Render Disk and point
+# DESK_DATA_DIR at it to make alerts survive.
 services:
   - type: web
     name: analysisdesk
