@@ -77,11 +77,14 @@ function fillSelects(){
   sym.value="EURUSD=X"; iv.value="1h";
 }
 
-function fmt(n,d=4){
+// Precision mirrors indicators.price_decimals on the server, so the card and the
+// API agree on how many decimals a number of this size deserves. They drifted
+// before: the server showed 57.2346 while the card showed 57.235.
+function fmt(n){
   if(n===null||n===undefined) return "—";
   const a=Math.abs(n);
-  const p = a>=1000?2 : a>=10?3 : a>=1?4 : 5;
-  return Number(n).toLocaleString("en-US",{minimumFractionDigits:Math.min(p,d),maximumFractionDigits:Math.max(p,d)});
+  const p = a>=1000?2 : a>=100?3 : a>=10?4 : 5;
+  return Number(n).toLocaleString("en-US",{minimumFractionDigits:p,maximumFractionDigits:p});
 }
 
 // Every server-supplied string goes through here before it is placed in the
@@ -112,7 +115,7 @@ async function run(){
   try{
     const u=`/api/analyze?symbol=${encodeURIComponent(sym.value)}&interval=${iv.value}&lang=${LANG}`;
     const r=await fetch(u);
-    if(!r.ok){ const j=await r.json().catch(()=>({})); throw new Error(j.detail||("HTTP "+r.statusCode)); }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); throw new Error(j.detail||("HTTP "+r.status)); }
     last=await r.json(); paint(last);
     status.textContent="";
   }catch(e){
@@ -236,8 +239,10 @@ async function drawChart(){
   let data;
   try{
     const r=await fetch(`/api/candles?symbol=${encodeURIComponent(last.symbol)}&interval=${last.interval}`);
+    if(!r.ok) return;                       // chart is a nicety; the read is not
     data=(await r.json()).candles;
   }catch(e){ return; }
+  if(!Array.isArray(data)||!data.length) return;
   const dpr=window.devicePixelRatio||1;
   const W=cv.clientWidth, H=260;
   cv.width=W*dpr; cv.height=H*dpr;

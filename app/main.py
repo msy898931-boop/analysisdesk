@@ -54,6 +54,12 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    # Tell the browser to stay on https for this host once it has seen us there.
+    # Harmless over plain http (browsers ignore it on a non-https origin), so it
+    # is safe to send unconditionally; Render terminates TLS in front of us.
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # Nothing here uses a camera, microphone, or location, so refuse them all.
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
 
@@ -71,15 +77,38 @@ _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
 def _client_ip(request: Request) -> str:
-    # Render terminates TLS in front of us; the first forwarded hop is the client.
+    # Take the LAST forwarded hop, not the first. Each proxy appends the address
+    # it saw, so the last entry is the one our own edge (Render) wrote and the
+    # caller cannot forge it. The first entry is whatever the caller sent -- a
+    # script could put a fresh value there on every request and walk straight
+    # past the limit, which is the whole point of the limit.
     fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    hops = [h.strip() for h in fwd.split(",") if h.strip()]
+    if hops:
+        return hops[-1]
     return request.client.host if request.client else "unknown"
+
+
+_swept = [0.0]
+
+
+def _prune(now: float) -> None:
+    """Drop buckets whose last hit has left the window.
+
+    Without this the dict keeps one entry per distinct caller forever, and a
+    caller can invent identities -- so it would only ever grow. A bucket still
+    inside its window is kept: it is still counting.
+    """
+    if now - _swept[0] < 60:
+        return
+    _swept[0] = now
+    for ip in [k for k, q in _hits.items() if not q or now - q[-1] > 60]:
+        del _hits[ip]
 
 
 def _within_rate(ip: str) -> bool:
     now = time.time()
+    _prune(now)
     q = _hits[ip]
     while q and now - q[0] > 60:
         q.popleft()

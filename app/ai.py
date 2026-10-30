@@ -345,6 +345,9 @@ async def narrate(symbol: str, interval: str, ind: dict, sig: dict, lang: str = 
                     "source": "model", "note": None}
 
     # Every model failed or contradicted the facts. Fall back to the computed sentence.
+    # `model` is None here for the same reason it is None on the no-key path: no
+    # model wrote this text, so naming MODELS[0] would credit prose it did not
+    # produce -- the card prints that field.
     note = _summarise_failures(reasons, lang)
-    return {"text": _offline_narrative(sig, ind, lang), "model": MODELS[0],
+    return {"text": _offline_narrative(sig, ind, lang), "model": None,
             "source": "deterministic", "note": note}

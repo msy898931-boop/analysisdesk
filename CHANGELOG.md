@@ -7,6 +7,15 @@ plain: what changed, and why it mattered.
 
 ### Security
 
+- **The rate limit could be walked around.** `X-Forwarded-For` was read from the
+  *first* hop, which is the value the caller sends; a script could put a new
+  address there on every request and never be counted. It now reads the **last**
+  hop, the one our own edge appended, which the caller cannot forge.
+- **The rate-limit map is now pruned** (expired buckets swept once a minute).
+  It kept one entry per distinct caller forever, so invented identities would
+  have grown it without bound.
+- **`Strict-Transport-Security` and `Permissions-Policy`** are now sent
+  alongside the existing CSP, nosniff, frame and referrer headers.
 - **XSS hardening.** Every server-supplied field that reaches the page is now
   escaped through `esc()` in `web/app.js`, and the AI narrative is additionally
   stripped of markup server-side (`_strip_markup` in `app/ai.py`). The inline
@@ -24,6 +33,23 @@ plain: what changed, and why it mattered.
 
 ### Fixed
 
+- **Spot gold was never cached.** The cache sat below the spot branch, so
+  XAUUSD — the instrument this desk exists for — was the one series that paid
+  for a fresh Kraken (then Coinbase) call on every single read. The cache now
+  wraps both venues.
+- **The card misreported the model on the fallback path.** When every model
+  failed, the narrative said `source=deterministic` but still named the primary
+  model, which reads as "this model wrote it". It now reports no model, because
+  none wrote the text.
+- **`r.statusCode` on the client is undefined** (`Response.status` is the real
+  property); the error path now prints the status it actually got.
+- **The card's precision disagreed with the API.** `fmt()` in `web/app.js`
+  rounded 57.2346 to 57.235 while the server said 57.2346; it now uses the same
+  magnitude rule as `indicators.price_decimals`.
+- **`drawChart` assumed a good payload** and threw on an error body; it now
+  checks the response and the shape before drawing.
+- **An undefined CSS variable** (`--fg`, the real token is `--txt`) left the
+  provenance figures unstyled.
 - **A zero or negative price no longer crashes the signal engine.** The
   level-room rule divided by price before the `fatal` check ran; a broken read
   now degrades to NEUTRAL with a warning instead of raising.
@@ -44,5 +70,6 @@ plain: what changed, and why it mattered.
 
 ### Tests
 
-- Coverage 67% → 71%; the suite grew from 77 to 84 tests, including the abuse
-  guard, the degenerate-price cases, and the markup-stripping path.
+- Coverage 67% → 74%; the suite grew from 77 to 91 tests, including the abuse
+  guard, the forwarded-IP fix, the degenerate-price cases, the spot cache, the
+  fallback attribution, and the markup-stripping path.

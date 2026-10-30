@@ -928,3 +928,130 @@ def test_negative_price_is_not_traded():
     s = signals.evaluate(_board(price=-5))
     assert s.direction == "NEUTRAL"
     assert s.confidence == 0.0
+
+
+# ------------------------------------------- forwarded-IP must not be forgeable
+
+def test_client_ip_uses_the_hop_our_edge_wrote_not_the_callers():
+    """A caller-controlled X-Forwarded-For must not choose its own bucket.
+
+    Reading the FIRST entry let a script send a new value per request and step
+    around the limit entirely. The last hop is the one our own proxy appended,
+    so it is the one the caller cannot forge.
+    """
+    from types import SimpleNamespace
+
+    spoofed = SimpleNamespace(
+        headers={"x-forwarded-for": "9.9.9.9, 203.0.113.7"},
+        client=SimpleNamespace(host="10.0.0.1"),
+    )
+    assert main._client_ip(spoofed) == "203.0.113.7"
+
+    # No forwarded header at all: fall back to the socket peer.
+    direct = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.2"))
+    assert main._client_ip(direct) == "10.0.0.2"
+
+
+def test_forged_forwarded_ip_cannot_multiply_the_budget(monkeypatch):
+    """One real client varying the first XFF entry still exhausts one budget."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(main, "RATE_LIMIT", 2)
+    main._hits.clear()
+    for fake in ("1.1.1.1", "2.2.2.2", "3.3.3.3"):
+        req = SimpleNamespace(headers={"x-forwarded-for": f"{fake}, 203.0.113.7"},
+                              client=SimpleNamespace(host="10.0.0.1"))
+        main._within_rate(main._client_ip(req))
+    # Three requests from one edge hop: the third is refused despite the forgery.
+    assert main._within_rate("203.0.113.7") is False
+
+
+def test_rate_limit_buckets_are_pruned_so_the_map_cannot_grow_forever():
+    """Distinct invented identities must not accumulate without bound."""
+    import time
+
+    main._hits.clear()
+    main._swept[0] = 0.0
+    for i in range(50):
+        main._hits[f"10.0.0.{i}"].append(0.0)  # all long expired
+    main._prune(time.time())
+    assert len(main._hits) == 0, "expired buckets were not swept"
+
+
+def test_hsts_and_permissions_policy_are_sent():
+    """HSTS pins https; the permissions policy refuses sensors nothing uses."""
+    h = client.get("/").headers
+    assert h["strict-transport-security"].startswith("max-age=")
+    assert "geolocation=()" in h["permissions-policy"]
+
+
+# ------------------------------------------------ spot is cached like futures
+
+def test_spot_series_is_cached(monkeypatch):
+    """Spot gold is the instrument this desk exists for; it must cache too.
+
+    The cache used to sit below the spot branch, so XAUUSD was the one series
+    that never cached and every read paid for a fresh upstream call.
+    """
+    import asyncio
+
+    from app.market import Candle, Series
+
+    calls = {"n": 0}
+
+    async def fake_spot(symbol, interval):
+        calls["n"] += 1
+        return Series(symbol="XAUUSD", currency="USD", exchange="test",
+                      interval=interval,
+                      candles=[Candle(i, 1, 1, 1, 1, None) for i in range(70)],
+                      short_name="Gold Spot", instrument_type="SPOT")
+
+    monkeypatch.setattr(market, "fetch_spot_series", fake_spot)
+    market._cache.clear()
+    first = asyncio.run(market.fetch_series("XAUUSD", "1h"))
+    second = asyncio.run(market.fetch_series("XAUUSD", "1h"))
+    assert first is second          # the cached object, not a fresh fetch
+    assert calls["n"] == 1, "spot was fetched twice; the cache did not apply"
+
+
+def test_spot_cache_respects_fresh_flag(monkeypatch):
+    """fresh=True must bypass the cache, so a forced re-read still re-reads."""
+    import asyncio
+
+    from app.market import Candle, Series
+
+    calls = {"n": 0}
+
+    async def fake_spot(symbol, interval):
+        calls["n"] += 1
+        return Series(symbol="XAUUSD", currency="USD", exchange="test",
+                      interval=interval,
+                      candles=[Candle(i, 1, 1, 1, 1, None) for i in range(70)],
+                      short_name="Gold Spot", instrument_type="SPOT")
+
+    monkeypatch.setattr(market, "fetch_spot_series", fake_spot)
+    market._cache.clear()
+    asyncio.run(market.fetch_series("XAUUSD", "1h"))
+    asyncio.run(market.fetch_series("XAUUSD", "1h", fresh=True))
+    assert calls["n"] == 2
+
+
+# --------------------------------------- the fallback must not name a model
+
+def test_deterministic_fallback_does_not_credit_a_model(monkeypatch):
+    """No model wrote the fallback, so the card must not name one.
+
+    The served narrative said source=deterministic while also reporting
+    model=<primary>, which reads as 'this model wrote it'. It did not.
+    """
+    ind = _board()
+    sig = signals.signal_dict(signals.evaluate(ind))
+
+    async def always_bad(client, model, messages):
+        return None, f"{model}: upstream returned 500"
+
+    monkeypatch.setattr(ai, "_try_model", always_bad)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    out = asyncio.run(ai.narrate("EURUSD=X", "1h", ind, sig, "en"))
+    assert out["source"] == "deterministic"
+    assert out["model"] is None

@@ -85,15 +85,20 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
     if interval not in INTERVALS:
         raise MarketDataError(f"unsupported interval: {interval}")
 
-    # Spot instruments (e.g. XAUUSD) come from a different venue entirely.
-    if symbol.upper() in SPOT_SYMBOLS:
-        return await fetch_spot_series(symbol, interval)
-
+    # The cache wraps both venues. It used to sit below the spot branch, so spot
+    # gold -- the instrument this desk exists for -- was the one series that
+    # never cached, and every read paid for a fresh Kraken plus Coinbase call.
     key = (symbol.upper(), interval)
     now = time.time()
     hit = _cache.get(key)
     if hit and not fresh and now - hit[0] < INTERVALS[interval][1]:
         return hit[1]
+
+    # Spot instruments (e.g. XAUUSD) come from a different venue entirely.
+    if symbol.upper() in SPOT_SYMBOLS:
+        series = await fetch_spot_series(symbol, interval)
+        _cache_put(key, (now, series))
+        return series
 
     rng = INTERVALS[interval][0]
     url = YAHOO.format(symbol=symbol)
