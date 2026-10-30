@@ -18,10 +18,16 @@ It also watches itself: if the log's last reading is older than
 firing. A probe that never runs is silent in exactly the way a healthy
 service is, and the two must not be confused.
 
+On a push (--expect-commit) it additionally reads /api/status to prove the
+pushed revision is the one running and to read the process's own count of
+unhandled errors (--max-errors). A deploy that answers /api/health while
+throwing on real requests is the failure a liveness probe cannot see.
+
 Exit status is 0 when the state is known and nothing is wrong (awake and healthy,
 or asleep -- both are normal) and 1 when the state is unknown, the app is awake
-but unhealthy, or the watchdog has gone quiet. A failed read is never reported
-as an all-clear.
+but unhealthy, the watchdog has gone quiet, or the running process has logged
+more unhandled errors than allowed. A failed read is never reported as an
+all-clear.
 """
 from __future__ import annotations
 
@@ -160,16 +166,51 @@ def _read_log(path: str) -> list[dict]:
     return rows
 
 
-def deployed_commit(base: str) -> str | None:
-    """Read the revision the running service reports, or None if unavailable."""
+def service_status(base: str) -> dict | None:
+    """Read the full /api/status body, or None if it is not readable.
+
+    This is the only call that touches a path which wakes a sleeping service,
+    so it is made only on a push (where a deploy is in flight anyway), never on
+    the zero-wake schedule.
+    """
     root = base.rstrip("/")
     status, body = fetch(root + "/api/status")
     if status != 200:
         return None
     try:
-        return (json.loads(body).get("commit") or "") or None
+        payload = json.loads(body)
     except ValueError:
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def deployed_commit(base: str) -> str | None:
+    """Read the revision the running service reports, or None if unavailable."""
+    payload = service_status(base)
+    if payload is None:
+        return None
+    return (payload.get("commit") or "") or None
+
+
+def error_verdict(status_body: dict, *, max_errors: int) -> tuple[bool, str]:
+    """Judge the process's own error count from /api/status.
+
+    Only unhandled exceptions are counted (a market source being down is a 502
+    with a reason, not a bug). A fresh process has a count of zero and a small
+    uptime; if the count is above the allowance, the run fails and names the
+    types, because a deploy that answers /api/health while throwing on real
+    requests is exactly the failure a liveness probe cannot see.
+    """
+    errs = status_body.get("errors") or {}
+    total = int(errs.get("total", 0) or 0)
+    types = errs.get("types") or {}
+    if total > max_errors:
+        names = ", ".join(f"{k}×{v}" for k, v in sorted(types.items())) or "unknown"
+        return False, (f"the running process logged {total} unhandled error(s) "
+                       f"({names}); allowance is {max_errors}")
+    if total:
+        return True, f"{total} unhandled error(s) within the allowance of {max_errors}"
+    return True, "no unhandled errors since start"
 
 
 def await_commit(base: str, expected: str, *, timeout: float,
@@ -211,6 +252,9 @@ def main(argv=None) -> int:
                          "(used on push to prove the deploy landed)")
     ap.add_argument("--wait-seconds", type=float, default=240.0, metavar="S",
                     help="how long to wait for --expect-commit to appear (default 240)")
+    ap.add_argument("--max-errors", type=int, default=0, metavar="N",
+                    help="fail when /api/status reports more than N unhandled "
+                         "errors (checked only with --expect-commit, i.e. on push)")
     ap.add_argument("--gap-threshold", type=float, default=3.0, metavar="HOURS",
                     help="alert when the watchdog's own last reading is older than "
                          "this many hours (default 3; the schedule targets 0.5)")
@@ -230,12 +274,18 @@ def main(argv=None) -> int:
     # cannot be confirmed, that is reported, not passed over.
     if args.expect_commit:
         cok, creason = await_commit(args.base, args.expect_commit, timeout=args.wait_seconds)
-        report["commit"] = deployed_commit(args.base)
+        status_body = service_status(args.base) or {}
+        report["commit"] = (status_body.get("commit") or "")[:12] or None
         if not cok:
             ok = False
-            reason = f"{reason}; {creason}"
-        else:
-            reason = f"{reason}; {creason}"
+        reason = f"{reason}; {creason}"
+
+        # A process that answers /api/health while throwing on real requests is
+        # exactly what a liveness probe cannot see. Read its own error count.
+        eok, ereason = error_verdict(status_body, max_errors=args.max_errors)
+        if not eok:
+            ok = False
+        reason = f"{reason}; {ereason}"
 
     # The watchdog must also watch itself: a schedule that stopped firing is
     # silence, and silence must not pass for an all-clear.

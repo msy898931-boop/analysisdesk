@@ -12,6 +12,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import itertools
 import os
 import time
 from collections import defaultdict, deque
@@ -19,10 +20,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, indicators, market, signals
+from . import ai, errors, indicators, market, signals
 
 load_dotenv()
 
@@ -35,6 +36,7 @@ WEB = Path(__file__).resolve().parent.parent / "web"
 # letting a small number read as "idle" when it means "recently restarted".
 _started = time.time()
 _served = [0]
+_req_seq = itertools.count(1)
 
 # The desk renders server-supplied strings, so a tag that reaches the browser is
 # a tag the browser obeys. Two things stop that: the client escapes every value,
@@ -56,8 +58,13 @@ CSP = (
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    # One id per request, echoed on the response so a reader can match what they
+    # saw to the log line the error tracker wrote for it.
+    rid = f"r{next(_req_seq):x}"
+    request.state.request_id = rid
     response = await call_next(request)
     _served[0] += 1
+    response.headers["X-Request-Id"] = rid
     response.headers["Content-Security-Policy"] = CSP
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -69,6 +76,24 @@ async def security_headers(request: Request, call_next):
     # Nothing here uses a camera, microphone, or location, so refuse them all.
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
+
+
+@app.exception_handler(Exception)
+async def unhandled(request: Request, exc: Exception) -> JSONResponse:
+    """Record an unexpected exception and answer without leaking it.
+
+    A bug of ours must be visible in the log -- the point of the tracker -- and
+    must not be visible to the caller: no traceback, no internal path, just the
+    request id, which is enough to find the full line. The traceback stays in
+    the log, where it is useful and not public.
+    """
+    rid = getattr(request.state, "request_id", "")
+    errors.record(exc, where="http", request_id=rid, path=request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "internal error", "request_id": rid},
+        headers={"X-Request-Id": rid},
+    )
 
 
 # --- abuse guard ------------------------------------------------------------
@@ -198,6 +223,10 @@ async def status():
         # The window is per-process, so this is the number of distinct callers
         # seen in the last minute -- the same set the limit is applied to.
         "tracked_clients": len(_hits),
+        # Unhandled exceptions only. A market source being down is expected and
+        # reported as 502 with a reason; it is not a bug and is not counted here.
+        # Aggregate by type -- no messages, no paths, no frames.
+        "errors": errors.summary(),
     }
 
 

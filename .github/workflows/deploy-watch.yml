@@ -70,8 +70,10 @@ jobs:
           EXPECT=""
           if [ "${{ github.event_name }}" = "push" ]; then
             # A Docker image build on Render takes minutes, so wait generously
-            # before concluding the deploy has not landed.
-            EXPECT="--expect-commit ${{ github.sha }} --wait-seconds 600"
+            # before concluding the deploy has not landed. --max-errors 0: a
+            # fresh process that has already logged an unhandled error is a
+            # failed deploy even though /api/health says ok.
+            EXPECT="--expect-commit ${{ github.sha }} --wait-seconds 600 --max-errors 0"
           fi
           # --gap-threshold 12: GitHub's throttled cron makes gaps of several
           # hours normal, so a tighter threshold would cry wolf on a healthy

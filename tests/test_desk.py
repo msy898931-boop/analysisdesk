@@ -6,6 +6,7 @@ fail here, not in front of a user.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import math
 import re
@@ -2213,3 +2214,140 @@ def test_await_commit_says_so_when_it_cannot_read_the_revision(monkeypatch):
     ok, reason = cd.await_commit("https://example.invalid", "abcabcabcabc",
                                  timeout=0.05, interval=0.01)
     assert ok is False and "did not answer" in reason
+
+
+# ------------------------------------------------------------ error tracking
+
+def test_unhandled_error_is_recorded_but_not_leaked(monkeypatch):
+    """A bug of ours must be visible in the log and invisible to the caller.
+
+    This is the gap the tracker closes: before it, an unexpected exception
+    produced an empty 500 and left no trace anywhere. The caller gets the
+    request id and nothing else -- no traceback, no message, no path.
+    """
+    from app import errors, main
+
+    captured = io.StringIO()
+    monkeypatch.setattr(errors._log.handlers[0], "stream", captured)
+    errors.reset()
+
+    async def boom():
+        raise RuntimeError("internal detail that must not ship")
+
+    route = main.app.router.routes
+    main.app.add_api_route("/api/_boom", boom)
+    try:
+        client = TestClient(main.app, raise_server_exceptions=False)
+        r = client.get("/api/_boom")
+    finally:
+        main.app.router.routes[:] = route
+
+    assert r.status_code == 500
+    body = r.json()
+    assert body["detail"] == "internal error"
+    assert "RuntimeError" not in r.text and "must not ship" not in r.text
+    assert body["request_id"] and body["request_id"] == r.headers["X-Request-Id"]
+
+    # ...and the full line, traceback included, is in the log.
+    line = captured.getvalue().strip()
+    assert '"trace"' in line and "RuntimeError" in line and "must not ship" in line
+    assert errors.summary()["total"] == 1
+    assert errors.summary()["types"] == {"RuntimeError": 1}
+
+
+def test_error_summary_carries_no_content(monkeypatch):
+    """/api/status is public; the summary is counts, never a message or path.
+
+    A type name is a category; a message can carry a value, a path, a host. The
+    summary keeps the category and drops the rest.
+    """
+    from app import errors, main
+
+    errors.reset()
+    try:
+        raise ValueError("secret-shaped payload at /etc/passwd")
+    except ValueError as e:
+        errors.record(e, where="http", request_id="r9", path="/api/analyze")
+
+    body = TestClient(main.app).get("/api/status").json()
+    blob = json.dumps(body)
+    assert "passwd" not in blob and "/api/analyze" not in blob
+    assert body["errors"]["total"] == 1
+    assert body["errors"]["types"] == {"ValueError": 1}
+    assert set(body["errors"]["last"]) == {"type", "where", "request_id", "ts"}
+
+
+def test_configured_secret_is_redacted_before_it_is_written(monkeypatch):
+    """A key that appears in a message or a traceback must not reach the log."""
+    from app import errors
+
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_live_0123456789abcdef")
+    captured = io.StringIO()
+    monkeypatch.setattr(errors._log.handlers[0], "stream", captured)
+    errors.reset()
+
+    try:
+        raise RuntimeError("auth failed for gsk_live_0123456789abcdef")
+    except RuntimeError as e:
+        errors.record(e, where="test")
+
+    line = captured.getvalue()
+    assert "gsk_live_0123456789abcdef" not in line
+    assert "***" in line
+
+
+def test_error_types_are_capped_and_folded_into_one_bucket(monkeypatch):
+    """A crash loop can invent exception types without bound; the map cannot grow."""
+    from app import errors
+
+    errors.reset()
+    for i in range(errors._MAX_TYPES + 5):
+        try:
+            raise type(f"E{i}", (Exception,), {})("x")
+        except Exception as e:  # noqa: BLE001 - exercising the tracker
+            errors.record(e, where="t")
+    types = errors.summary()["types"]
+    assert len(types) == errors._MAX_TYPES + 1        # the cap plus _other
+    assert errors.summary()["total"] == errors._MAX_TYPES + 5
+
+
+def test_market_source_failure_is_not_counted_as_our_error(monkeypatch):
+    """A feed being down is expected (502 with a reason), not a bug of ours.
+
+    The distinction is the whole point: a source outage must not read as the
+    service being broken, or the error count becomes noise and gets ignored.
+    """
+    from app import errors, main, market
+
+    errors.reset()
+
+    async def no_feed(symbol, interval="1h", *, fresh=False):
+        raise market.MarketDataError("feed unreachable")
+
+    monkeypatch.setattr(market, "fetch_series", no_feed)
+    r = TestClient(main.app).get("/api/analyze?symbol=EURUSD=X&interval=1h")
+    assert r.status_code == 502
+    assert "feed unreachable" in r.json()["detail"]
+    assert errors.summary()["total"] == 0
+
+
+def test_watch_error_verdict_fails_a_process_that_is_throwing():
+    """A deploy that answers health while throwing must not pass as green."""
+    cd = _WATCH["check_deploy"]
+    ok, reason = cd.error_verdict({"errors": {"total": 3, "types": {"ValueError": 3}}},
+                                  max_errors=0)
+    assert ok is False
+    assert "3 unhandled" in reason and "ValueError" in reason
+
+
+def test_watch_error_verdict_passes_a_clean_process():
+    cd = _WATCH["check_deploy"]
+    ok, reason = cd.error_verdict({"errors": {"total": 0, "types": {}}}, max_errors=0)
+    assert ok is True and "no unhandled errors" in reason
+
+
+def test_watch_error_verdict_tolerates_a_missing_field():
+    """An older deploy without the errors field is not a false alarm."""
+    cd = _WATCH["check_deploy"]
+    ok, reason = cd.error_verdict({}, max_errors=0)
+    assert ok is True and "no unhandled errors" in reason

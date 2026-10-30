@@ -127,13 +127,45 @@ plain: what changed, and why it mattered.
   the pushed one, or reports what it saw instead. A green run that only says
   "something is serving" would be the same false all-clear this desk refuses.
 
+### Error tracking
+
+- **Unhandled exceptions are no longer silent.** Before this, an unexpected
+  exception produced an empty 500 and left no trace anywhere — no log, no
+  counter. `app/errors.py` now writes one structured JSON line per error to
+  stdout (which Render captures — that is the durable log) and keeps an
+  aggregate count by type. The full traceback stays in the log; the caller gets
+  a generic 500 with an `X-Request-Id`, never the traceback, path, or message.
+- **Secrets are redacted and the record is bounded.** Any configured secret
+  (`GROQ_API_KEY`, `DESK_API_KEY`, `TELEGRAM_BOT_TOKEN`, …) that appears in the
+  message or traceback becomes `***`; the message and traceback are truncated,
+  and the distinct exception types are capped so a crash loop cannot grow the
+  map without bound.
+- **`/api/status` reports the count by type**, aggregate only — no messages, no
+  paths, no frames. Every field is process-local; `uptime_s` beside it is what
+  tells a zero from "only just started".
+- **An upstream outage is not counted as our error.** A market source being down
+  is a 502 with the reason, and is excluded from the count on purpose — a source
+  outage must not read as the service being broken, or the count becomes noise
+  and gets ignored.
+- **The watcher fails a deploy that is throwing.** On push, `check_deploy.py
+  --max-errors 0` reads that count: a deploy that answers `/api/health` while
+  raising on real requests is exactly the failure a liveness probe cannot see.
+- **No third-party tracker, by choice.** Sending stack traces and request
+  context to an external account is not a decision this project makes on the
+  owner's behalf, so there is no Sentry (or equivalent) dependency. The trade is
+  stated in ARCHITECTURE: no cross-process aggregation, no error-rate alerting,
+  no tracing, and no tracking of a request that is served but returns a wrong
+  number — only of one that raises.
+
 ### Tests
 
 - Coverage 67% → **87%** → **95%**; the suite grew from 77 to **128** to
-  **170 tests** (plus 8 UI tests under node). New this pass: every market venue
+  **178 tests** (plus 8 UI tests under node). New this pass: every market venue
   and every failure path (`market.py` 49% → 99%), the browser helpers, the
   accessibility and mobile rules, two tests that pin the single-worker
-  rate-limit scope, the API layer end to end (`main.py` 74% → 98%), the model
-  fallback chain model by model (`ai.py` 77% → 89%), and the monitoring
-  surface — `/api/status`, the lapsed-watchdog detector, and the
-  deploy-landed check.
+  rate-limit scope, the API layer end to end (`main.py` 74% → 99%), the model
+  fallback chain model by model (`ai.py` 77% → 89%), and the monitoring and
+  error-tracking surface — `/api/status`, the lapsed-watchdog detector, the
+  deploy-landed check, the unhandled-error record with its no-leak and
+  secret-redaction rules, and the rule that an upstream outage is not counted as
+  our error.

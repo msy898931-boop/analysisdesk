@@ -19,6 +19,7 @@ cannot do its job honestly, it says so rather than returning a friendly default.
                         │  ─────────────────────────────────────── │
                         │  guard: API key, per-IP rate limit       │
                         │  headers: CSP, HSTS, nosniff, frame, ... │
+                        │  app/errors.py  unhandled → log + count  │
                         └───────────────┬─────────────────────────┘
                                         │
                 ┌───────────────────────┼───────────────────────┐
@@ -150,6 +151,15 @@ rounded by the one rule in `indicators`.
   stays as a backstop. On push the check also waits for the pushed revision to
   become the running one, so a green run proves the deploy landed rather than
   that "something is serving".
+- **`app/errors.py`** records unhandled exceptions as one JSON line on stdout
+  (Render captures it — that is the durable log) and keeps an aggregate count by
+  type for `/api/status`. The full traceback stays in the log; the caller gets a
+  generic 500 with the request id, never the traceback. Any configured secret
+  that appears in the text is redacted, and the type map is capped. On push the
+  watcher reads that count (`--max-errors`) — a deploy that answers `/api/health`
+  while throwing on real requests is exactly the failure a liveness probe cannot
+  see. A market source being down is a 502 with a reason, and is *not* counted:
+  an upstream outage must not read as a bug of ours.
 
 ## Honest limits
 
@@ -166,13 +176,22 @@ Stated here rather than left for a reader to discover:
   a rate limit, the desk degrades to the computed sentence and says why.
 - **`HEAD`/`GET` on an unknown symbol** returns "could not read", never a guess.
 - **The Free instance sleeps**, so the first request after idle is slow.
-- **Monitoring is a heartbeat, not full observability.** There is no metrics
-  backend, no tracing, and no error tracking (Sentry or similar): a request that
-  fails after the probe passes is invisible until someone reads the logs. The
-  watcher proves the service answers and that the deployed revision is the one
-  pushed; it does not measure latency, error rate, or a slow dependency. The
-  probe also runs on push and on a throttled cron, so detection can lag a real
-  outage by hours — that is stated here rather than implied to be instant.
+- **Monitoring is a heartbeat plus a local error log, not full observability.**
+  Unhandled exceptions are recorded as one structured line on stdout (which
+  Render captures) and counted in memory, and `/api/status` reports the count
+  by type. There is deliberately **no third-party tracker**: sending stack
+  traces and request context to an external account is not a decision this
+  project makes on the owner's behalf. What is missing as a result: no
+  cross-process aggregation (a restart resets the count — `uptime_s` is the
+  tell), no alerting on error *rate*, no tracing across the upstream calls, and
+  no error tracking at all for a request that is served but returns the wrong
+  number — only for one that raises. The probe runs on push and on a throttled
+  cron, so detection can lag a real outage by hours; that is stated here rather
+  than implied to be instant.
+- **An upstream outage is not counted as our error.** A market source being
+  down is reported to the caller as 502 with the reason, and is excluded from
+  the error count on purpose — a source outage must not read as the service
+  being broken, or the count becomes noise and is ignored.
 
 ## Testing philosophy
 
