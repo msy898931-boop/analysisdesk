@@ -30,6 +30,17 @@ const T = {
 };
 let LANG="ar", SYMS=[], IVS={}, BUSY=false;
 
+// Bind every element by id instead of leaning on window's named access. That
+// shortcut is not safe here: this file is a module (strict mode), and `status`
+// is a reserved window property (the status bar string), so a bare `status`
+// resolved to a string and `status.textContent=...` threw a TypeError *before*
+// the try block -- the panel stayed empty and the button stayed disabled with
+// no error shown anywhere. `sym` and `iv` did not resolve at all. Naming each
+// one removes the whole class of bug rather than the single symptom.
+const $ = id => document.getElementById(id);
+const title=$("title"), tagline=$("tagline"), go=$("go"), status=$("status"),
+      sym=$("sym"), iv=$("iv"), out=$("out"), footline=$("footline"), disc=$("disc");
+
 function setLang(l){
   LANG=l;
   document.documentElement.lang=l;

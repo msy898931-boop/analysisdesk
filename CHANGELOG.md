@@ -157,10 +157,30 @@ plain: what changed, and why it mattered.
   no tracing, and no tracking of a request that is served but returns a wrong
   number — only of one that raises.
 
+### The dead analyze button
+
+- **The Analyze button did nothing, and said nothing.** `web/app.js` is a
+  module, so it runs in strict mode, and it referred to its elements by bare
+  name (`status`, `go`, `sym`, …) relying on window's named access. `status` is
+  a reserved window property — the status-bar string — so a bare `status` was a
+  *string*, and `status.textContent = t.load` threw a `TypeError` **before** the
+  `try` block: the panel stayed empty, the button stayed disabled, and no error
+  appeared anywhere. `sym` and `iv` did not resolve at all. It shipped because
+  the UI tests only exercised the pure helpers in `lib.js` and never touched the
+  DOM.
+- **Fix:** every element is now bound explicitly with `$("id")` and a comment
+  says why the shortcut is unsafe here.
+- **A test that would have caught it:** `web/dom.test.mjs` runs `app.js` for
+  real in a `node:vm` sandbox with a minimal DOM — no browser — and asserts that
+  a click renders a card and re-enables the button. Reverting the fix fails all
+  three cases; the fix passes them. It also asserts that every id `app.js` binds
+  exists in `index.html`, so a rename cannot quietly break the wiring again.
+
 ### Tests
 
 - Coverage 67% → **87%** → **95%**; the suite grew from 77 to **128** to
-  **178 tests** (plus 8 UI tests under node). New this pass: every market venue
+  **178 tests** (plus 11 UI tests under node, 8 helpers + 3 DOM). New this pass:
+  every market venue
   and every failure path (`market.py` 49% → 99%), the browser helpers, the
   accessibility and mobile rules, two tests that pin the single-worker
   rate-limit scope, the API layer end to end (`main.py` 74% → 99%), the model

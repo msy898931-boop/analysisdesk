@@ -191,8 +191,9 @@ app/
 web/index.html   الواجهة (عربي/إنجليزي، بلا أي اعتماد خارجي)
 web/lib.js       دوال نقية (esc، fmt، priceDecimals) يشترك بها المتصفح واختبارات node
 web/app.js       سكربت الواجهة (module خارجي عمداً — CSP بيمنع inline)
-web/app.test.mjs ٨ اختبارات لواجهة المستخدم عبر `node --test`
-tests/           ١٢٨ اختباراً على المسارات الحقيقية، بلا محاكاة
+web/app.test.mjs ٨ اختبارات للدوال النقية عبر `node --test`
+web/dom.test.mjs ٣ اختبارات تربط الواجهة (تشغّل app.js بمتصفح وهمي)
+tests/           ١٧٨ اختباراً على المسارات الحقيقية، بلا محاكاة
 scripts/         فحص النشر + التنبيه
 pyproject.toml   مصدر واحد: الاعتماديات + إعدادات ruff/pytest/coverage/mypy
 ARCHITECTURE.md  الطبقات وتدفّق البيانات والحدود الصريحة

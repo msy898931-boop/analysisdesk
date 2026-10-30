@@ -80,7 +80,11 @@ jobs:
 
   ui:
     # The card is half the product and none of the Python tests touch it. This
-    # job runs the browser-side helpers under node's own test runner.
+    # job runs the browser-side helpers and the DOM wiring under node's own
+    # test runner. app.test.mjs covers the pure helpers in lib.js; dom.test.mjs
+    # runs app.js itself against a small DOM and catches a dead button -- the
+    # failure that a bare `status` (a reserved window property) produced, which
+    # the helper tests could not see.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -91,6 +95,9 @@ jobs:
 
       - name: UI unit tests
         run: node --test web/app.test.mjs
+
+      - name: DOM wiring tests
+        run: node --test web/dom.test.mjs
 
   docker:
     # "Green in CI" and "the image builds" were two different facts: nothing

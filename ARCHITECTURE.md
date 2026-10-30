@@ -199,5 +199,9 @@ The suite runs against the real code paths, not mocks. Network-touching tests
 are marked `network` and deselected in CI, so a red build means our code broke,
 not that a provider was slow. The market layer's parsing is pinned with canned
 payloads (every venue, every error path); the browser helpers are pinned under
-`node --test`. A green suite is treated as necessary, not sufficient — the
+`node --test`, and `web/dom.test.mjs` runs `app.js` itself in a `node:vm`
+sandbox with a minimal DOM -- no browser -- so a dead button or a renamed id
+fails the build instead of shipping (that gap is how the analyze button shipped
+dead: a bare `status` is a reserved window property, so the module threw before
+its `try` block). A green suite is treated as necessary, not sufficient — the
 defects that mattered most were found by reading a path no test exercised.
