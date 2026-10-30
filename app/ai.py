@@ -166,6 +166,55 @@ def _figures(text: str) -> list[str]:
     return [raw.replace(",", "") for raw in re.findall(r"\d[\d,]*\.\d+", text)]
 
 
+def _sheet_text(ind: dict, sig: dict) -> str:
+    """The fact sheet as the model receives it, tolerant of a partial report.
+
+    _fact_sheet indexes several sig keys directly. The guard runs on real reports
+    where they are always present, but a caller assembling a partial dict should
+    get a smaller allow-list rather than a KeyError.
+    """
+    filled = {"rules": [], "warnings": [], "direction": "NEUTRAL", **sig}
+    base = {"price": 0.0, "ema20": 0.0, "ema50": 0.0, "ema200": 0.0, "macd": 0.0,
+            "macd_signal": 0.0, "support": 0.0, "resistance": 0.0, "rsi": 0.0,
+            "stoch_k": 0.0, "atr_pct": 0.0, "bb_position": 0.5, **ind}
+    try:
+        return _fact_sheet("", "", base, filled, "en")
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
+def _allowed_figures(ind: dict, sig: dict) -> set[str]:
+    """Every decimal figure the model may legitimately quote.
+
+    Two sources, unioned: the figures the fact sheet actually states, and the
+    underlying report values. The sheet half matters — the sheet is what the
+    model is told to quote, so when the guard kept its own hand-written list,
+    bollinger_position was offered to the model in the sheet and then rejected
+    as an invention. Deriving from the sheet means the two cannot drift apart.
+    """
+    allowed: set[str] = set()
+
+    def add(v) -> None:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return
+        for s in (str(v), f"{f:.1f}", f"{f:.2f}", f"{f:.3f}", f"{f:.4f}", f"{f:.5f}"):
+            allowed.add(s)
+
+    for raw in re.findall(r"\d[\d,]*\.\d+", _sheet_text(ind, sig)):
+        add(raw.replace(",", ""))
+
+    for key in ("price", "ema20", "ema50", "ema200", "macd", "macd_signal",
+                "macd_hist", "support", "resistance", "rsi", "stoch_k", "stoch_d",
+                "atr_pct", "bb_position"):
+        add(ind.get(key))
+    for key in ("entry", "stop_loss", "take_profit", "confidence",
+                "risk_reward", "score"):
+        add(sig.get(key))
+    return allowed
+
+
 def _verify(text: str, ind: dict, sig: dict) -> str | None:
     """Return a rejection reason if the model's prose contradicts the facts.
 
@@ -178,17 +227,7 @@ def _verify(text: str, ind: dict, sig: dict) -> str | None:
         if bad in low:
             return f"used banned profit language: {bad}"
 
-    # Any decimal figure in the prose must exist in the fact set. Accept every
-    # rounding the model could reasonably apply to a real value.
-    numbers = [ind["price"], ind["ema20"], ind["ema50"], ind["ema200"], ind["macd"],
-               ind["macd_signal"], ind["support"], ind["resistance"], ind["rsi"],
-               ind["stoch_k"], ind["atr_pct"], sig["entry"], sig["stop_loss"],
-               sig["take_profit"], sig["confidence"], sig["risk_reward"], sig["score"]]
-    allowed = set()
-    for v in numbers:
-        for f in (str(v), f"{v:.1f}", f"{v:.2f}", f"{v:.3f}", f"{v:.4f}", f"{v:.5f}"):
-            allowed.add(f)
-
+    allowed = _allowed_figures(ind, sig)
     for tok in _figures(text):
         if tok not in allowed:
             return f"invented a figure not in the report: {tok}"

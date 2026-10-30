@@ -590,3 +590,51 @@ def test_banned_profit_language_is_still_rejected():
     ind, sig = _facts()
     assert ai._verify("هذا مضمون الربح", ind, sig) is not None
     assert ai._verify("guaranteed profit", ind, sig) is not None
+
+
+# ---------------- the guard's allow-list must cover what the sheet tells the model
+
+def _real_facts():
+    """A board shaped like production, including bollinger_position."""
+    ind = {"price": 3983.19, "ema20": 4006.67, "ema50": 4020.23, "ema200": 4040.56,
+           "macd": -11.6175, "macd_signal": -9.46481, "macd_hist": -2.15268,
+           "support": 3982.41, "resistance": 4028.40, "rsi": 30.45, "stoch_k": 1.7,
+           "atr_pct": 0.318, "bb_position": 0.026, "bb_upper": 4040.0,
+           "bb_mid": 4010.0, "bb_lower": 3980.0, "stoch_d": 5.0}
+    sig = {"direction": "SELL", "entry": 3983.19, "stop_loss": 4002.21,
+           "take_profit": 3945.14, "confidence": 50.0, "risk_reward": 2.0,
+           "score": -100.0, "rules": [], "warnings": []}
+    return ind, sig
+
+
+def test_every_figure_the_sheet_shows_is_accepted_by_the_guard():
+    """The invariant: if we tell the model a number, quoting it cannot be an invention.
+
+    bollinger_position=0.026 was printed in the sheet and then rejected as
+    'invented a figure' because the guard kept a separate hand-written list.
+    """
+    ind, sig = _real_facts()
+    sheet = ai._sheet_text(ind, sig)
+    tokens = ai._figures(sheet)
+    assert tokens, "the sheet should contain figures"
+    for tok in tokens:
+        prose = f"The value is {tok}."
+        assert ai._verify(prose, ind, sig) is None, (
+            f"guard rejected {tok}, which the fact sheet itself states")
+
+
+def test_bollinger_position_from_production_is_accepted():
+    """The exact live failure: 0.026 was in the sheet and got rejected."""
+    ind, sig = _real_facts()
+    assert ai._verify("Bollinger position is 0.026.", ind, sig) is None
+
+
+def test_guard_still_rejects_a_number_absent_from_the_sheet():
+    ind, sig = _real_facts()
+    assert ai._verify("The target is 3999.99.", ind, sig) is not None
+
+
+def test_allowed_figures_survives_a_partial_report():
+    """A missing key must shrink the allow-list, not raise."""
+    allowed = ai._allowed_figures({"price": 100.5}, {})
+    assert "100.5" in allowed
