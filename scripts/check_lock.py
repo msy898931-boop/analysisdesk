@@ -11,7 +11,10 @@ What is checked, all deterministically:
   1. every direct dependency in requirements.txt is present in the lock;
   2. the version the lock pins satisfies the range requirements.txt declares
      (so `fastapi>=0.170` with a lock still on 0.162 is a failure, not a note);
-  3. every locked package is pinned with `==` and carries at least one hash.
+  3. every locked package is pinned with `==` and carries at least one hash;
+  4. the lock was compiled for the lowest supported Python (`requires-python`),
+     not the image's -- a 3.12 lock can pin a wheel that does not exist on 3.11,
+     which CI tests, and the audit would fail there while the image built fine.
 
 It deliberately does NOT re-resolve and diff: a routine upstream release would
 change the answer every week and the check would be ignored. This asks only the
@@ -101,6 +104,24 @@ def check(root: Path = ROOT) -> dict:
     locked = _parse_lock(lock_path.read_text("utf-8"))
     if not locked:
         problems.append("requirements.lock pins nothing")
+
+    # The lock must be compiled for the lowest supported Python, not the image's.
+    # A lock built for 3.12 can pin a wheel that does not exist on 3.11, and CI
+    # tests 3.11 -- so the audit would fail there while the image (3.12) built
+    # fine. The lock's own header records the version it was compiled for.
+    pyproject = root / "pyproject.toml"
+    floor = None
+    if pyproject.exists():
+        m = re.search(r'requires-python\s*=\s*"[^0-9]*([0-9]+\.[0-9]+)', pyproject.read_text("utf-8"))
+        if m:
+            floor = m.group(1)
+    header = re.search(r"--python-version\s+([0-9]+\.[0-9]+)", lock_path.read_text("utf-8"))
+    compiled_for = header.group(1) if header else None
+    if floor and compiled_for and compiled_for != floor:
+        problems.append(
+            f"the lock was compiled for Python {compiled_for}, but requires-python "
+            f"is {floor}; compile it for the floor so it installs on every tested version"
+        )
 
     for name, spec in sorted(direct.items()):
         if name not in locked:

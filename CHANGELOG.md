@@ -88,7 +88,11 @@ plain: what changed, and why it mattered.
 - **`requirements.lock`** — the resolved, hash-pinned dependency set, and the
   thing the image now installs (`--require-hashes`). Before this, `>=` ranges
   meant two builds of the same commit could install different bytes, and the
-  image that passed CI was not provably the image that shipped.
+  image that passed CI was not provably the image that shipped. It is compiled
+  for the **lowest** supported Python (3.11), not the image's 3.12: compiling
+  for 3.12 pinned `numpy 2.5.4` (>=3.12 only) and the 3.11 CI job died on
+  `pip-audit -r requirements.lock` while the image built fine — a lock must
+  install everywhere the project claims to run.
 - **`scripts/check_lock.py`** — fails when the lock pins a version the declared
   range no longer allows, when a direct dependency is missing from it, or when
   any entry is unpinned or unhashed. Deterministic on purpose: a re-resolve-and-

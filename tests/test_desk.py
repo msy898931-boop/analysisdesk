@@ -2074,3 +2074,26 @@ def test_check_lock_treats_a_missing_file_as_a_failure(tmp_path):
     finally:
         sys.path.remove(sys_path)
     assert not report["ok"]
+
+
+def test_the_lock_is_compiled_for_the_lowest_supported_python():
+    """A 3.12 lock can pin a wheel that does not exist on 3.11, which CI tests.
+
+    This was a real failure: the lock was compiled for the image's 3.12, numpy
+    resolved to 2.5.4 (>=3.12 only), and `pip-audit -r requirements.lock` died on
+    the 3.11 job with 'No matching distribution found' while the image built
+    fine. The lock must be installable everywhere the project claims to run.
+    """
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    floor = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))[
+        "project"]["requires-python"]
+    assert floor.startswith(">="), f"unexpected requires-python: {floor}"
+    lowest = floor.lstrip(">=").strip()
+    header = (root / "requirements.lock").read_text("utf-8")
+    assert f"--python-version {lowest}" in header, (
+        f"the lock must be compiled for the floor {lowest}; regenerate it with "
+        f"`uv pip compile requirements.txt --python-version {lowest} --generate-hashes`"
+    )

@@ -51,6 +51,13 @@ jobs:
         # without a fresh resolve that a routine upstream release would break.
         run: python scripts/check_lock.py
 
+      - name: The lock must install on this Python
+        # The check above reads the files; this one resolves them. A lock compiled
+        # for a newer Python can pin a wheel that does not exist here, and the
+        # only way to know is to ask pip to install it on the interpreter CI
+        # actually uses. This is what caught a 3.12 lock on the 3.11 job.
+        run: pip install --dry-run --require-hashes -r requirements.lock
+
       - name: Tests
         # Network tests are deselected: CI must not depend on a third party
         # being up, or a red build would mean "Yahoo was slow", not "we broke it".

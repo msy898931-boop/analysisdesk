@@ -57,10 +57,13 @@ Add the marker to any test that hits a live endpoint.
 ## Dependencies
 
 `requirements.txt` holds the ranges; `requirements.lock` is the resolved,
-hash-pinned set the image installs. After changing a range, regenerate it:
+hash-pinned set the image installs. Compile it for the **lowest** supported
+Python (3.11, `requires-python`), not the image's 3.12: the lock must be
+installable on every version CI tests, and a lock built for 3.12 can pin a wheel
+that does not exist on 3.11. After changing a range, regenerate it:
 
 ```bash
-uv pip compile requirements.txt --python-version 3.12 \
+uv pip compile requirements.txt --python-version 3.11 \
   --generate-hashes --no-emit-index-url --no-header -o requirements.lock
 python scripts/check_lock.py        # must pass before you push
 ```
