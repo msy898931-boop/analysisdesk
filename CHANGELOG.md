@@ -12,8 +12,9 @@ plain: what changed, and why it mattered.
   no lookahead, one bar at a time — and returns its realised record: hit rate,
   expectancy in R, total R, max drawdown, and the sample size. The result
   carries `CAVEATS` on its face, and a small sample is flagged, not dressed up.
-  On EURUSD 1h the honest answer is **negative** (expectancy ≈ −0.17R), and the
-  desk says so rather than hiding it. Ambiguous bars resolve against the trade
+  On EURUSD 1h the honest answer is **negative** (expectancy on the order of
+  −0.04R, moving with the data — the endpoint is the authority), and the desk
+  says so rather than hiding it. Ambiguous bars resolve against the trade
   (the stop is checked before the target), because the optimistic rule — target
   first — is how a backtest lies.
 - **A durable store.** `app/store.py` persists alert subscriptions and a visit

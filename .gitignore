@@ -22,3 +22,10 @@ data/
 .coverage
 htmlcov/
 coverage.xml
+
+# build metadata (setuptools/editable installs)
+*.egg-info/
+
+# tool caches
+.ruff_cache/
+.mypy_cache/

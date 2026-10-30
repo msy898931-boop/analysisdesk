@@ -5,6 +5,7 @@
 An AI-driven market analysis desk built on **real market data**.
 
 كيف بُني، وليش كل طبقة منفصلة، ووين الحدود — في [`ARCHITECTURE.md`](ARCHITECTURE.md).
+وعرض المشروع (عربي/إنجليزي، ملف واحد بلا اعتماديات) في [`pitch.html`](pitch.html).
 
 ---
 
@@ -54,8 +55,6 @@ across 5 timeframes (5m → 1wk).
 
 ---
 
----
-
 ## تشغيله بشكل دائم / Keeping it running
 
 هذه البيئة **ما فيها نظام خدمات**: PID 1 هو الوكيل، `systemd` معطّل، ولا cron
@@ -79,12 +78,14 @@ across 5 timeframes (5m → 1wk).
 مكشوف للشبكة، فلا `.env` ولا `.runtime/` يُوصلان من الخارج.
 
 ---
----
 
 ## النشر / Deploying
 
 الملفات جاهزة ومُختبرة: `Dockerfile`، `render.yaml`، `.dockerignore`، `.env.example`.
-التطبيق **ما يكتب شي على القرص** (الذاكرة فقط)، فما يحتاج قرصاً دائماً.
+التطبيق **يشتغل بلا قرص دائم**: الكاش والحدّ بالمذاكرة، وملف التنبيهات (SQLite)
+يُنشأ على قرص الحاوية. على الخطة المجانية بلا قرص مثبّت، هذا الملف **يُمسح عند
+إعادة النشر/التشغيل** — فالتنبيهات المسلَّحة تُبنى من جديد. `/api/status` يقول
+`store.durable: false` بصراحة. لِتسليكها، اضبط `DESK_DATA_DIR` على قرص مثبّت.
 
 **الطريق الأسرع (Render):**
 
@@ -92,7 +93,7 @@ across 5 timeframes (5m → 1wk).
 2. ادفع الكود:
    ```bash
    git remote add origin https://github.com/<user>/analysisdesk.git
-   GIT_TERMINAL_PROMPT=0 git push https://${GITHUB_TOKEN}@github.com/<user>/analysisdesk.git master
+   GIT_TERMINAL_PROMPT=0 git push https://${GITHUB_TOKEN}@github.com/<user>/analysisdesk.git main
    ```
 3. في Render: **New → Blueprint** → اختر الريبو. `render.yaml` يبني الباقي.
 4. أضف `GROQ_API_KEY` في Environment (اختياري: بدونه يرجع للتفسير المحسوب).
@@ -212,7 +213,7 @@ web/app.js       سكربت الواجهة (module خارجي عمداً — CSP
 web/app.test.mjs ٨ اختبارات للدوال النقية عبر `node --test`
 web/dom.test.mjs ٧ اختبارات تربط الواجهة (تشغّل app.js بمتصفح وهمي)
 tests/           اختبارات على المسارات الحقيقية، بلا محاكاة
-scripts/         فحص النشر + مشغّل التنبيهات الدوري
+scripts/         فحص النشر + تمريرة تنبيهات لمرة واحدة (تناديه من مجدول؛ ليس daemon)
 pyproject.toml   مصدر واحد: الاعتماديات + إعدادات ruff/pytest/coverage/mypy
 ARCHITECTURE.md  الطبقات وتدفّق البيانات والحدود الصريحة
 .github/         CI + قالب الـPR + مراقبة النشر
