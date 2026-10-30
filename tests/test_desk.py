@@ -523,3 +523,32 @@ def test_swissquote_mid_returns_none_on_unusable_payload():
     for bad in (None, [], [{}], [{"spreadProfilePrices": []}],
                 [{"spreadProfilePrices": [{"bid": 1, "ask": None}]}]):
         assert market._swissquote_mid(bad) is None
+
+
+# ------------------------------------------- the raw frame price is cleaned too
+
+def _frame_with(close_last: float):
+    import pandas as pd
+    n = 300
+    idx = pd.date_range("2026-01-01", periods=n, freq="h")
+    closes = [100.0 + (i % 7) * 0.1 for i in range(n - 1)] + [close_last]
+    return pd.DataFrame({"open": closes, "high": [c + 0.5 for c in closes],
+                         "low": [c - 0.5 for c in closes], "close": closes,
+                         "volume": [1.0] * n}, index=idx)
+
+
+def test_snapshot_price_carries_no_float_tail():
+    """EUR/USD closes land as 1.1185681819915771; the board must not ship that."""
+    import pandas as pd  # noqa: F401
+    from app.market import Series
+    import app.indicators as ind
+
+    raw = 1.1185681819915771
+    series = Series(symbol="EURUSD=X", currency="USD", exchange="test",
+                    interval="1h", candles=[], short_name="EUR/USD",
+                    instrument_type="SPOT")
+    series.to_frame = lambda: _frame_with(raw)  # type: ignore[method-assign]
+    board = ind.snapshot(series)
+    assert board["price"] == 1.11857, board["price"]
+    assert repr(board["price"]) == "1.11857", repr(board["price"])
+    assert repr(board["prev_close"]) == "100.4", repr(board["prev_close"])

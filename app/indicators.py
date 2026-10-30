@@ -105,9 +105,13 @@ def snapshot(series: Series) -> dict:
         return _clean(s.iloc[-1], digits) if len(s) else float("nan")
 
     return {
-        "price": price,
-        "prev_close": float(close.iloc[-2]),
-        "change_pct": float((price / close.iloc[-2] - 1) * 100),
+        # price/prev_close come straight off the frame, so they carry the raw
+        # float tail (1.1185681819915771). Every other figure here already goes
+        # through _clean; these must too, or the API ships noise the UI only
+        # hides by formatting it.
+        "price": _clean(price),
+        "prev_close": _clean(float(close.iloc[-2])),
+        "change_pct": _clean((price / close.iloc[-2] - 1) * 100, 4),
         "rsi": tail("rsi", 2),
         "macd": tail("macd"),
         "macd_signal": tail("macd_signal"),
