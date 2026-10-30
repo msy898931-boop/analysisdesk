@@ -35,6 +35,12 @@ cannot do its job honestly, it says so rather than returning a friendly default.
           gold-api
 
   web/index.html + web/lib.js + web/app.js  ──  the card (RTL, bilingual)
+
+  side modules (no upstream, no network of their own):
+    app/backtest.py  walk the signal engine forward over history → a record
+    app/news.py      keyless RSS → headlines (titles only)
+    app/store.py     SQLite: alert subscriptions + a visit counter
+    app/alerts.py    level-crossing detection + opt-in Telegram delivery
 ```
 
 ### `app/market.py` — the only place a price enters
@@ -128,9 +134,14 @@ rounded by the one rule in `indicators`.
   by the worker count — do that only after moving the counter to a shared store.
 - Runs as **unprivileged `desk` (uid 10001)** with a `HEALTHCHECK`.
 - **Render Free**, via `render.yaml` (Docker, `autoDeploy: true`). The instance
-  **sleeps after ~15 minutes idle** and cold-starts on the next request. Nothing
-  is persisted; caches are in memory, so a cold start costs latency, not
-  correctness.
+  **sleeps after ~15 minutes idle** and cold-starts on the next request. Caches
+  are in memory, so a cold start costs latency, not correctness.
+- **State on an ephemeral disk.** `app/store.py` writes SQLite under
+  `DESK_DATA_DIR` (default `data/`). On Render's free plan there is **no mounted
+  disk**, so the file lives on the container's disk and is gone on the next
+  deploy or restart — `/api/status` reports `store.durable: false` when that is
+  the case, rather than implying the alerts will survive. Point `DESK_DATA_DIR`
+  at a Render Disk (or a real database) to make it durable.
 - `GROQ_API_KEY` is declared in the blueprint with `sync: false` — set in the
   dashboard, never in git. Without it the desk still works (computed prose).
 - **The image installs `requirements.lock`**, not `requirements.txt`: the lock is
@@ -176,6 +187,25 @@ rounded by the one rule in `indicators`.
 
 Stated here rather than left for a reader to discover:
 
+- **The backtest is a record, not a promise — and the record is negative.** On
+  EURUSD 1h the engine's expectancy is ≈ −0.17R over 152 trades. The desk prints
+  that instead of a favourable slice. Ambiguous bars resolve against the trade
+  (the stop is checked before the target); the optimistic rule — target first —
+  is how a backtest lies. The sample size and the missing costs (spread,
+  slippage, fees) are on the result's face via `CAVEATS`. A small sample is
+  flagged, not dressed up.
+- **The news surface is headlines only.** RSS feeds carry a title, a link, a
+  publisher, and a time — no body text. So the desk cannot read the news; it can
+  only list headlines. It never claims sentiment or impact. A feed that fails is
+  reported as failed per source, so a silent feed is visible as an outage rather
+  than an empty list that looks like calm.
+- **The alert loop's delivery is off unless asked.** Telegram delivery runs only
+  when `ALERTS_ENABLED` is set. Armed alerts persist to SQLite, but on an
+  ephemeral host that file is gone after a restart, so an alert can be lost —
+  `/api/status` says whether the store is durable.
+- **One worker, on purpose.** The cache and the rate-limit counter live in
+  memory; more than one worker would multiply the effective rate limit and split
+  the cache. A correct multi-worker setup needs a shared store (Redis) first.
 - **The rate limit does not survive a restart and is not shared across
   replicas.** It stops casual scraping and runaway loops, which is what
   threatens the quota. A shared counter (Redis) is the fix if the deployment
