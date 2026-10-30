@@ -43,7 +43,9 @@ Talks to the outside world and returns a `Series` of real candles. Two venues:
 Yahoo for futures/forex/crypto/indices, and a spot path for XAUUSD (Kraken
 PAXG/USD primary, Coinbase fallback) because there is no keyless spot-gold candle
 feed. A separate `fetch_spot` returns the live broker quote (Swissquote, then
-gold-api) that the card prints beside the chart.
+gold-api) that the card prints beside the chart, and `anchor_series_to_spot`
+rescales the proxy candles onto that quote so every level on the card is on the
+broker's scale.
 
 Rules this layer keeps:
 
@@ -103,7 +105,8 @@ GET /api/analyze?symbol=XAUUSD&interval=1h&lang=ar
   signals.evaluate()      → direction, confidence, levels, rules, warnings
   ai.narrate()            → fact sheet → model → verify → strip → prose
   market.fetch_spot()     → live broker quote, shown beside the chart
-  → JSON: indicators + signal + narrative + instrument + spot
+  anchor_series_to_spot() → proxy candles rescaled onto that quote (spot gold)
+  → JSON: indicators + signal + narrative + instrument + spot + anchor
 ```
 
 Every field the card renders is escaped at the boundary; every figure is
@@ -170,8 +173,15 @@ Stated here rather than left for a reader to discover:
   threatens the quota. A shared counter (Redis) is the fix if the deployment
   ever scales past one instance.
 - **Spot gold is charted from a gold-backed token** (PAXG/USD), not a broker's
-  XAU/USD feed, because no keyless spot-gold candle source exists. The real
-  broker quote is shown beside it, and the gap between the two is labelled.
+  XAU/USD feed, because no keyless spot-gold candle source exists. The token
+  trades at a small premium (~0.2%), so the candles are **rescaled onto the live
+  broker quote** by one factor: every absolute level (entry, stop, target,
+  support, resistance) then sits on the broker's scale, while every ratio (RSI,
+  ATR%, Bollinger position) is unchanged because the factor cancels. The shift is
+  reported in `anchor` and labelled on the card — a silent rescale would be the
+  same hidden substitution this desk refuses everywhere else. Past
+  `MAX_ANCHOR_PCT` (1.5%) the proxy is treated as diverged: it is **not**
+  rescaled, and a warning says the levels are the proxy's, not spot's.
 - **The AI layer is optional and non-authoritative.** With no key, a bad key, or
   a rate limit, the desk degrades to the computed sentence and says why.
 - **`HEAD`/`GET` on an unknown symbol** returns "could not read", never a guess.

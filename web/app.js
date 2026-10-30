@@ -9,24 +9,28 @@ const T = {
       rsi:"مؤشر القوة RSI",macd:"MACD",stoch:"ستوكاستيك",bands:"بولنجر",
       why:"لماذا هذه القراءة؟",ai:"تفسير الذكاء الاصطناعي",chart:"الشموع (آخر 200)",
       rules:"قاعدة",w:"وزن",notes:"ملاحظات مهمة",live:"بيانات حيّة",of:"من",
-      foot:"كل رقم معروض محسوب من بيانات سوق حقيقية عبر Yahoo Finance. لا توجد أي أرقام مُدخلة يدوياً.",
+      foot:"كل رقم معروض محسوب من بيانات سوق حقيقية. لا توجد أي أرقام مُدخلة يدوياً.",
+      foot_src:"المصدر",
       disc:"تحليل تقني آلي. ليس توصية استثمارية ولا ضماناً لأي نتيجة. توافق المؤشرات ليس احتمال ربح.",
       load:"جارٍ قراءة السوق…",neutral:"لا اتجاه واضح",bull:"صاعد",bear:"هابط",mid:"محايد",
       neutral_note:"المؤشرات متعارضة — القراءة الأمينة هي عدم الدخول.",
       sig:"إشارة",agree:"توافق",model:"الموديل",det:"تفسير محسوب",failed:"تعذّر قراءة السوق",
-      instrument:"الأداة",spot:"السبوت",futures:"عقد آجل",basis:"الفرق عن السبوت",track:"مطابقة السبوت",chart_src:"مصدر الشموع"},
+      instrument:"الأداة",spot:"السبوت",futures:"عقد آجل",basis:"الفرق عن السبوت",chart_src:"مصدر الشموع",
+      anchor:"الإرساء على السبوت",anchor_na:"غير مُرسّى"},
   en:{title:"AnalysisDesk",tagline:"Transparent technical analysis on real market data",go:"Analyze",
       reading:"Market read",agreement:"Indicator agreement",entry:"Entry",sl:"Stop loss",
       tp:"Target",rr:"Risk/Reward",support:"Support",resistance:"Resistance",atr:"Volatility (ATR)",
       rsi:"RSI",macd:"MACD",stoch:"Stochastic",bands:"Bollinger",
       why:"Why this read?",ai:"AI explanation",chart:"Candles (last 200)",
       rules:"Rule",w:"Weight",notes:"Important notes",live:"Live data",of:"of",
-      foot:"Every figure shown is computed from real market data via Yahoo Finance. No hand-entered numbers.",
+      foot:"Every figure shown is computed from real market data. No hand-entered numbers.",
+      foot_src:"Source",
       disc:"Automated technical analysis. Not investment advice, no guarantee of any outcome. Indicator agreement is not a probability of profit.",
       load:"Reading the market…",neutral:"No clear direction",bull:"bullish",bear:"bearish",mid:"neutral",
       neutral_note:"Indicators conflict — the honest call is to stand aside.",
       sig:"Signal",agree:"Agreement",model:"Model",det:"Computed explanation",failed:"Could not read the market",
-      instrument:"Instrument",spot:"Spot",futures:"Futures",basis:"Basis vs spot",track:"Tracking spot",chart_src:"Candle source"},
+      instrument:"Instrument",spot:"Spot",futures:"Futures",basis:"Basis vs spot",chart_src:"Candle source",
+      anchor:"Anchored to spot",anchor_na:"Not anchored"},
 };
 let LANG="ar", SYMS=[], IVS={}, BUSY=false;
 
@@ -138,6 +142,10 @@ function chartAlt(d, s){
 
 function paint(d){
   const t=T[LANG], i=d.indicators, s=d.signal;
+  // Name the venue that actually supplied the candles. A fixed "via Yahoo
+  // Finance" was a label that lied on spot gold, which comes from Kraken.
+  const venue = (d.instrument && (d.instrument.provider || d.instrument.exchange)) || "";
+  footline.textContent = t.foot + (venue ? ` ${t.foot_src}: ${venue}.` : "");
   const dirTxt = s.direction==="BUY"?t.bull : s.direction==="SELL"?t.bear : t.neutral;
   const dirCls = s.direction;
   const up = i.change_pct>=0;
@@ -169,13 +177,19 @@ function paint(d){
   }
   if (inst.exchange) prov += `<span>${esc(inst.exchange)}</span>`;
   if (d.spot && d.spot.price) {
-    const basis = basisPct(i.price, d.spot.price);
     prov += `<span>${t.spot} ${esc(d.spot.metal)}: <b>${fmt(d.spot.price)}</b>`
           + (d.spot.source ? ` <i>${esc(d.spot.source)}</i>` : "") + `</span>`;
-    // On a futures contract this gap is the basis; on the spot instrument it is
-    // how closely the charted market tracks the live broker quote.
-    const label = inst.kind==="futures" ? t.basis : t.track;
-    prov += `<span>${label}: <b>${signedPct(basis)}</b></span>`;
+    if (d.anchor && d.anchor.ok) {
+      // The charted token was rescaled onto this quote, so the levels above are
+      // the broker's, not the token's. Name the shift: a silent rescale would be
+      // the same hidden substitution this desk refuses everywhere else.
+      prov += `<span>${t.anchor}: <b>${signedPct(d.anchor.pct)}</b></span>`;
+    } else if (inst.kind==="futures") {
+      // On a futures contract the gap to spot is the basis.
+      prov += `<span>${t.basis}: <b>${signedPct(basisPct(i.price, d.spot.price))}</b></span>`;
+    } else if (d.anchor) {
+      prov += `<span class="provmiss">${t.anchor_na}</span>`;
+    }
   } else if (d.spot && d.spot.error) {
     prov += `<span class="provmiss">${t.spot}: ${t.failed}</span>`;
   }

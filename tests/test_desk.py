@@ -1499,6 +1499,70 @@ async def _fetch_spot_with(fake):
         market.httpx.AsyncClient = orig
 
 
+# ---- anchor_series_to_spot (put the proxy on the broker's scale) ----
+
+def _spot_series(n=120, close0=100.0, step=0.1):
+    from app.market import Candle, Series
+
+    candles = [
+        Candle(1700000000 + i * 3600, close0 + i * step, close0 + 0.5 + i * step,
+               close0 - 0.5 + i * step, close0 + i * step, None)
+        for i in range(n)
+    ]
+    return Series(symbol="XAUUSD", currency="USD", exchange="Kraken PAXG/USD",
+                  interval="1h", candles=candles, short_name="Gold Spot (XAU/USD)",
+                  instrument_type="SPOT")
+
+
+def test_anchor_rescales_the_levels_onto_the_live_quote():
+    s = _spot_series()
+    proxy_last = s.candles[-1].c
+    out = market.anchor_series_to_spot(s, {"price": proxy_last * 0.998, "source": "Swissquote"})
+    assert out.anchor["ok"] is True
+    # The last close now sits on the quote, to the float.
+    assert abs(out.candles[-1].c - proxy_last * 0.998) < 1e-9
+    assert out.anchor["source"] == "Swissquote"
+    # The input series is untouched -- anchoring returns a new one.
+    assert s.candles[-1].c == proxy_last
+
+
+def test_anchor_leaves_every_ratio_unchanged():
+    """RSI, ATR% and Bollinger position are ratios; a uniform scale cancels."""
+    from app import indicators
+
+    s = _spot_series()
+    before = indicators.snapshot(s)
+    after = indicators.snapshot(market.anchor_series_to_spot(
+        s, {"price": s.candles[-1].c * 0.99, "source": "Swissquote"}))
+    for key in ("rsi", "atr_pct", "bb_position", "stoch_k"):
+        assert before[key] == pytest.approx(after[key], rel=1e-9), key
+    # Only the absolute prices move.
+    assert after["price"] < before["price"]
+    assert after["support"] < before["support"]
+
+
+def test_anchor_refuses_a_diverged_proxy():
+    """A token that lost its peg is not spot; rescaling it would fabricate a price."""
+    s = _spot_series()
+    out = market.anchor_series_to_spot(s, {"price": s.candles[-1].c * 0.8})
+    assert out.anchor["ok"] is False and out.anchor["reason"] == "proxy diverged"
+    assert out.candles[-1].c == s.candles[-1].c  # raw candles, not rescaled
+
+
+def test_anchor_declines_without_a_quote():
+    s = _spot_series()
+    assert market.anchor_series_to_spot(s, None).anchor["ok"] is False
+    assert market.anchor_series_to_spot(s, {"error": "503"}).anchor["ok"] is False
+    assert market.anchor_series_to_spot(s, {"price": 0}).anchor["ok"] is False
+
+
+def test_anchor_ignores_a_non_spot_series():
+    """A currency or a futures contract is already the real thing."""
+    fx = _series("EURUSD=X")
+    out = market.anchor_series_to_spot(fx, {"price": 9999})
+    assert out.anchor is None and out is fx
+
+
 # --------------------------------------------- the browser side has tests too
 
 def test_ui_helpers_pass_under_node():
@@ -1712,6 +1776,60 @@ def test_analyze_says_spot_failed_instead_of_hiding_it(monkeypatch):
     c = _wire(monkeypatch, _series("GC=F", kind="FUTURE"), spot_error="upstream 503")
     body = c.get("/api/analyze?symbol=GC=F&interval=1h").json()
     assert body["spot"]["error"] and "price" not in body["spot"]
+
+
+def test_analyze_anchors_spot_gold_onto_the_broker_quote(monkeypatch):
+    """The card's levels must be the broker's, not the token's."""
+    quote = 111.68  # ~0.2% under the proxy's last close of 111.9, as PAXG trades
+    c = _wire(monkeypatch, _spot_series(), spot={"metal": "XAU", "price": quote,
+                                                 "source": "Swissquote"})
+    body = c.get("/api/analyze?symbol=XAUUSD&interval=1h").json()
+    assert body["anchor"]["ok"] is True
+    assert body["anchor"]["source"] == "Swissquote"
+    # Every level is now on the quote's scale, within a hair of it.
+    assert abs(body["indicators"]["price"] - quote) < 0.05
+    assert body["signal"]["entry"] <= 111.7
+
+
+def test_analyze_reports_a_diverged_proxy_as_a_warning(monkeypatch):
+    """A proxy far from spot is flagged, and its levels are not passed off as spot."""
+    c = _wire(monkeypatch, _spot_series(), spot={"metal": "XAU", "price": 50.0,
+                                                 "source": "Swissquote"})  # 55% away
+    body = c.get("/api/analyze?symbol=XAUUSD&interval=1h").json()
+    assert body["anchor"]["ok"] is False
+    codes = [w["code"] for w in body["signal"]["warnings"]]
+    assert "proxy_diverged" in codes
+    # The warning is bilingual, like every other string on the card.
+    w = next(w for w in body["signal"]["warnings"] if w["code"] == "proxy_diverged")
+    assert w["ar"] and w["en"]
+
+
+def test_analyze_flags_levels_as_proxy_when_spot_is_unreadable(monkeypatch):
+    c = _wire(monkeypatch, _spot_series(), spot_error="upstream 503")
+    body = c.get("/api/analyze?symbol=XAUUSD&interval=1h").json()
+    codes = [w["code"] for w in body["signal"]["warnings"]]
+    assert "spot_unread" in codes and body["anchor"]["ok"] is False
+
+
+def test_instrument_names_the_real_provider(monkeypatch):
+    """The footer credits this, so it must not say Yahoo for a Kraken series."""
+    c = _wire(monkeypatch, _spot_series(), spot={"metal": "XAU", "price": 111.68})
+    gold = c.get("/api/analyze?symbol=XAUUSD&interval=1h").json()
+    assert "Kraken" in gold["instrument"]["provider"]
+    fx = _wire(monkeypatch, _series("EURUSD=X"))
+    eur = fx.get("/api/analyze?symbol=EURUSD=X&interval=1h").json()
+    assert eur["instrument"]["provider"] == "Yahoo Finance"
+
+
+def test_candles_for_spot_gold_are_anchored_too(monkeypatch):
+    """The chart must not draw the token's prices under a card that shows spot."""
+    from app import main
+
+    c = _wire(monkeypatch, _spot_series(), spot={"metal": "XAU", "price": 111.68,
+                                                 "source": "Swissquote"})
+    body = c.get("/api/candles?symbol=XAUUSD&interval=1h").json()
+    assert abs(body["candles"][-1]["c"] - 111.68) < 0.05
+    assert main.market.SPOT_SYMBOLS["XAUUSD"]["metal"] == "XAU"
 
 
 def test_analyze_rejects_an_unknown_interval(monkeypatch):

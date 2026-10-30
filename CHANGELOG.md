@@ -5,6 +5,25 @@ plain: what changed, and why it mattered.
 
 ## Unreleased
 
+### Fixed
+
+- **The price the desk showed was not the price the user's broker shows.**
+  Spot gold is charted from a gold-backed token (PAXG/USD) because there is no
+  keyless spot-gold candle feed. The token trades at a small premium, so the big
+  number — and every level under it: entry, stop, target, support, resistance —
+  was on the token's scale, ~0.2% above the real XAU/USD quote. A user reading a
+  stop off the card would place it at a price the market never had. The candles
+  are now rescaled onto the live broker quote (`anchor_series_to_spot`) by one
+  factor, so every absolute level sits on the broker's scale while every ratio
+  (RSI, ATR%, Bollinger position) is unchanged — the factor cancels. The shift is
+  reported in the `anchor` field and labelled on the card. Past `MAX_ANCHOR_PCT`
+  (1.5%) the proxy is treated as diverged: it is **not** rescaled, and a bilingual
+  warning says the levels are the proxy's, not spot's.
+- **The footer credited a source that did not serve the candles.** It read "via
+  Yahoo Finance" on every instrument, but spot gold comes from Kraken. The
+  response now carries `instrument.provider` and the footer names it, so the
+  credit matches the data on every symbol.
+
 ### Security
 
 - **The rate limit could be walked around.** `X-Forwarded-For` was read from the

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 import pandas as pd
@@ -46,6 +46,10 @@ class Series:
     candles: list[Candle]
     short_name: str = ""
     instrument_type: str = ""
+    # Set when the charted candles were rescaled onto the live broker quote --
+    # i.e. a gold-backed token standing in for spot XAU/USD. It records the factor
+    # and the quote it came from, so the shift is disclosed rather than hidden.
+    anchor: dict | None = None
 
     @property
     def last_price(self) -> float:
@@ -294,6 +298,63 @@ async def fetch_spot_series(instrument: str, interval: str) -> Series:
         short_name=spec["name"],
         instrument_type="SPOT",
     )
+
+
+# The proxy's premium over real spot is small and steady -- PAXG traded ~0.2%
+# above XAU/USD -- so it barely moves the shape of the chart, but it moves every
+# *level*: entry, stop, target, support and resistance all inherited the token's
+# price. A user reading those off their own broker screen would place a stop at a
+# number the market never had. Rescaling the candles by one factor puts the whole
+# board on the broker's scale, and because the factor cancels in every ratio
+# (RSI, ATR%, Bollinger position) the indicators are unchanged -- only the prices
+# move. The shift is returned in `anchor` so it is disclosed, not silent.
+#
+# Past this premium the proxy is not tracking spot, it is diverging: the token
+# can lose its peg, and a chart rescaled by a large factor would be a fabricated
+# price. So beyond the bound we refuse to rescale and leave the raw candles,
+# flagged as unanchored.
+MAX_ANCHOR_PCT = 1.5
+
+
+def anchor_series_to_spot(series: Series, spot: dict | None) -> Series:
+    """Rescale a spot-instrument series onto the live broker quote.
+
+    Returns a new Series with an `anchor` record, or the input unchanged (with
+    `anchor` set to a reason) when the quote is missing or the gap is too wide to
+    trust. It never invents a price: the shift is the real quote over the last
+    real close, applied uniformly to candles that are themselves real.
+    """
+    if series.instrument_type != "SPOT" or not series.candles:
+        return series
+    if not isinstance(spot, dict):
+        return replace(series, anchor={"ok": False, "reason": "no live quote"})
+    price = spot.get("price")
+    if not price or price <= 0:
+        return replace(series, anchor={"ok": False, "reason": "no live quote"})
+
+    last = series.candles[-1].c
+    if last <= 0:
+        return replace(series, anchor={"ok": False, "reason": "no last close"})
+
+    pct = (last - price) / price * 100
+    if abs(pct) > MAX_ANCHOR_PCT:
+        return replace(series, anchor={
+            "ok": False, "reason": "proxy diverged", "pct": round(pct, 3),
+            "proxy_price": last, "spot_price": price,
+        })
+
+    factor = price / last
+    candles = [Candle(c.t, c.o * factor, c.h * factor, c.l * factor, c.c * factor, c.v)
+               for c in series.candles]
+    return replace(series, candles=candles, anchor={
+        "ok": True,
+        "factor": factor,
+        "proxy_price": last,
+        "spot_price": price,
+        "pct": round(pct, 3),
+        "source": spot.get("source", ""),
+        "max_pct": MAX_ANCHOR_PCT,
+    })
 
 
 # --- Spot metals -----------------------------------------------------------

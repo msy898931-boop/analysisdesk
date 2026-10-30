@@ -256,10 +256,6 @@ async def analyze(
         # Fail loudly. A silent all-clear is the one thing we never emit.
         raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
 
-    ind = indicators.snapshot(series)
-    sig = signals.signal_dict(signals.evaluate(ind))
-    narrative = await ai.narrate(series.symbol, interval, ind, sig, lang)
-
     # Provenance. A bare "Gold" number is ambiguous: the COMEX contract and spot
     # XAU/USD differ by a basis, so we name the instrument and, when we are on a
     # futures contract, also report the spot it tracks. On the spot instrument we
@@ -274,6 +270,38 @@ async def analyze(
         except market.MarketDataError as exc:
             spot = {"metal": metal, "error": str(exc)}
 
+    # Put the charted candles on the broker's scale before anything is computed
+    # from them. A gold-backed token stands in for spot XAU/USD (there is no
+    # keyless spot feed), and it trades at a small premium, so every level the
+    # card shows — entry, stop, target, support, resistance — would otherwise be
+    # on the token's scale, not the number on the user's own screen. Rescaling by
+    # one factor leaves every ratio (RSI, ATR%, Bollinger position) untouched.
+    series = market.anchor_series_to_spot(series, spot)
+
+    ind = indicators.snapshot(series)
+    sig = signals.signal_dict(signals.evaluate(ind))
+    narrative = await ai.narrate(series.symbol, interval, ind, sig, lang)
+
+    # If the proxy stopped tracking spot, the levels are the token's, not gold's.
+    # Say so on the card rather than letting a large silent gap stand.
+    anchor = series.anchor or {}
+    if series.instrument_type == "SPOT" and not anchor.get("ok"):
+        if anchor.get("reason") == "proxy diverged":
+            gap = f"{anchor.get('pct', 0):+.2f}%"
+            sig["warnings"].append({
+                "code": "proxy_diverged",
+                "en": (f"the charted proxy is {gap} from live spot — it has stopped "
+                       f"tracking gold, so these levels are the proxy's, not spot"),
+                "ar": (f"البروكسي المُرسم بعيد {gap} عن السبوت الحيّ — فَقَد تتبّع الذهب، "
+                       f"فهذه المستويات مستوياته هو لا مستويات السبوت"),
+            })
+        elif spot and spot.get("error"):
+            sig["warnings"].append({
+                "code": "spot_unread",
+                "en": "the live spot quote could not be read — levels are the proxy's",
+                "ar": "تعذّرت قراءة سعر السبوت الحيّ — المستويات مستويات البروكسي",
+            })
+
     return {
         "symbol": series.symbol,
         "currency": series.currency,
@@ -284,8 +312,14 @@ async def analyze(
             "kind": kind,
             "name": series.short_name,
             "exchange": series.exchange,
+            # Name the provider, not Yahoo's internal venue code ("CCY", "CCC").
+            # The footer credits this, so it must be the thing that really served
+            # the candles -- spot gold comes from Kraken, not Yahoo.
+            "provider": (series.exchange if series.symbol.upper() in market.SPOT_SYMBOLS
+                         else "Yahoo Finance"),
         },
         "spot": spot,
+        "anchor": series.anchor,
         "indicators": ind,
         "signal": sig,
         "narrative": narrative,
@@ -306,6 +340,17 @@ async def candles(request: Request, symbol: str, interval: str = "1h"):
         series = await market.fetch_series(symbol, interval)
     except market.MarketDataError as exc:
         raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
+    # Same rescale as /api/analyze: the chart must sit on the broker's scale, or
+    # it would draw the token's prices under a card that shows spot.
+    if series.instrument_type == "SPOT":
+        metal = market.SPOT_SYMBOLS.get(series.symbol.upper(), {}).get("metal")
+        if metal:
+            try:
+                quote = await market.fetch_spot(metal)
+            except market.MarketDataError:
+                quote = None  # no quote: draw the raw candles rather than nothing
+            if quote:
+                series = market.anchor_series_to_spot(series, quote)
     return {
         "symbol": series.symbol,
         "interval": interval,
