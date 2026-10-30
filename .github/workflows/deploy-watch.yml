@@ -84,9 +84,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python3 scripts/alert.py open \
-            --state "${{ steps.probe.outputs.state || 'unknown' }}" \
-            --reason "${{ steps.probe.outputs.reason || 'the probe produced no verdict' }}"
+          if [ "${{ inputs.force_alert }}" = "true" ]; then
+            STATE="test"
+            REASON="manual test alert (workflow_dispatch) — not a real failure"
+          else
+            STATE="${{ steps.probe.outputs.state || 'unknown' }}"
+            REASON="${{ steps.probe.outputs.reason || 'the probe produced no verdict' }}"
+          fi
+          python3 scripts/alert.py open --state "$STATE" --reason "$REASON"
 
       - name: Close the alert once it recovers
         if: steps.probe.outputs.ok == 'true' && !inputs.force_alert
