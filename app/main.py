@@ -8,6 +8,12 @@ Endpoints:
   GET /api/health           -> liveness
   GET /api/symbols          -> watchlist
   GET /api/analyze          -> full analysis for one symbol/timeframe
+  GET /api/backtest         -> walk-forward record of the signal engine
+  GET /api/alerts           -> list armed alerts for a chat
+  POST /api/alerts          -> arm a price-crossing alert
+  DELETE /api/alerts/{id}   -> remove one of your alerts
+  GET /api/news             -> keyless headlines beside the read
+  GET /api/candles          -> raw candles for the chart
 """
 
 from __future__ import annotations
@@ -23,11 +29,17 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, errors, indicators, market, signals
+from . import ai, alerts, backtest, errors, indicators, market, news, signals, store
 
 load_dotenv()
 
 app = FastAPI(title="AnalysisDesk", version="1.1.0")
+
+# Open the durable store once at import. Failure is not fatal: the desk serves
+# reads from memory either way, and /api/status reports the store as unavailable
+# rather than pretending it is there.
+store.init()
+
 WEB = Path(__file__).resolve().parent.parent / "web"
 
 # Process-level counters for the diagnostics surface. `_served` counts responses
@@ -227,6 +239,10 @@ async def status():
         # reported as 502 with a reason; it is not a bug and is not counted here.
         # Aggregate by type -- no messages, no paths, no frames.
         "errors": errors.summary(),
+        # The durable store. `durable: false` on an ephemeral host is stated
+        # rather than implied -- a restart keeping your alerts is not the same
+        # promise as a redeploy keeping them.
+        "store": store.stats(),
     }
 
 
@@ -331,6 +347,84 @@ async def analyze(
     }
 
 
+@app.get("/api/backtest")
+async def backtest_endpoint(
+    request: Request,
+    symbol: str = Query(..., description="Yahoo Finance symbol, e.g. EURUSD=X"),
+    interval: str = Query("1h"),
+    step: int = Query(1, ge=1, le=50, description="score a signal every `step` bars"),
+):
+    """Walk the signal engine forward over the real candles and report its record.
+
+    This is the honest answer to "does the strategy work?" -- a realised result
+    over a historical sample, with the sample size and the missing costs stated
+    on the result itself, never a forecast.
+    """
+    if interval not in market.INTERVALS:
+        raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
+    await guard(request)
+    try:
+        series = await market.fetch_series(symbol, interval)
+    except market.MarketDataError as exc:
+        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
+    result = backtest.run(series, step=step)
+    d = result.as_dict()
+    d["caveats_ar"] = backtest.CAVEATS_AR
+    return d
+
+
+@app.get("/api/alerts")
+async def list_alerts(request: Request, chat_id: str = Query(...)):
+    """List a chat's armed alerts. Scoped to the caller's chat id, nothing else."""
+    await guard(request)
+    return {"alerts": store.list_subscriptions(chat_id), "delivery_on": alerts.alerts_enabled()}
+
+
+@app.post("/api/alerts")
+async def create_alert(  # noqa: PLR0913, PLR0917 - query params, not a call site
+    request: Request,
+    chat_id: str = Query(...),
+    symbol: str = Query(...),
+    price: float = Query(...),
+    direction: str = Query("BUY"),
+    interval: str = Query("1h"),
+):
+    """Arm an alert. Returns 503 when the store cannot persist it -- an alert
+    that is not written down is not an alert, and pretending otherwise is the
+    one thing this desk does not do."""
+    if interval not in market.INTERVALS:
+        raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
+    if direction not in ("BUY", "SELL"):
+        raise HTTPException(400, "direction must be BUY or SELL")
+    if price <= 0:
+        raise HTTPException(400, "price must be positive")
+    await guard(request)
+    sid = store.add_subscription(chat_id, symbol, interval, direction, price)
+    if sid is None:
+        raise HTTPException(503, "the alert store is unavailable; nothing was saved")
+    return {"id": sid, "armed": True, "delivery_on": alerts.alerts_enabled()}
+
+
+@app.delete("/api/alerts/{alert_id}")
+async def delete_alert(request: Request, alert_id: int, chat_id: str = Query(...)):
+    """Remove one alert, but only if the caller's chat id owns it."""
+    await guard(request)
+    ok = store.remove_subscription(chat_id, alert_id)
+    if not ok:
+        raise HTTPException(404, "no such alert for this chat")
+    return {"removed": alert_id}
+
+
+@app.get("/api/news")
+async def news_endpoint(request: Request, limit: int = Query(12, ge=1, le=40)):
+    """Keyless headlines beside the read. Titles only, and the feed health is
+    reported per source so a silent feed is visible as a failure, not an empty
+    list that looks like "no news"."""
+    await guard(request)
+    result = await news.fetch_news(limit=limit)
+    return result.as_dict()
+
+
 @app.get("/api/candles")
 async def candles(request: Request, symbol: str, interval: str = "1h"):
     if interval not in market.INTERVALS:
@@ -365,4 +459,5 @@ app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 @app.get("/")
 async def index():
+    store.bump("visits")
     return FileResponse(str(WEB / "index.html"))

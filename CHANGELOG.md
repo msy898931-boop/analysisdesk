@@ -7,6 +7,33 @@ plain: what changed, and why it mattered.
 
 ### Added
 
+- **A backtest, so the desk's edge can be measured instead of asserted.**
+  `GET /api/backtest` walks the signal engine forward over the real candles —
+  no lookahead, one bar at a time — and returns its realised record: hit rate,
+  expectancy in R, total R, max drawdown, and the sample size. The result
+  carries `CAVEATS` on its face, and a small sample is flagged, not dressed up.
+  On EURUSD 1h the honest answer is **negative** (expectancy ≈ −0.17R), and the
+  desk says so rather than hiding it. Ambiguous bars resolve against the trade
+  (the stop is checked before the target), because the optimistic rule — target
+  first — is how a backtest lies.
+- **A durable store.** `app/store.py` persists alert subscriptions and a visit
+  counter to SQLite (`DESK_DATA_DIR`). Adds are idempotent, subscriptions are
+  scoped to their owner's chat id, and `/api/status` reports whether the store
+  is durable on this host — `durable: false` on Render's ephemeral disk is
+  stated, not implied.
+- **Price-crossing alerts.** `app/alerts.py` detects a level crossing in pure
+  code (`crossed()`), and `/api/alerts` arms, lists, and removes them.
+  **Telegram delivery is off by default** and only runs when `ALERTS_ENABLED` is
+  set explicitly — an alert loop that starts messaging people because it can is
+  not one this desk ships. A message that goes out says "تحليل آلي وليس توصية".
+- **Keyless headlines.** `app/news.py` reads public RSS feeds with no API key
+  and serves them at `GET /api/news`. Titles only — the feeds carry no body
+  text, so "reading the news" here is headlines, and the surface never claims
+  sentiment or impact. A feed that fails is reported as failed per source, so a
+  silent feed is visible as an outage, not an empty list that looks like calm.
+- **Performance tripwires.** Tests that fail on an accidental O(n²) in the
+  indicator snapshot and on super-linear scaling, so a slow path is caught in
+  CI rather than in a request.
 - **Six targets per trade, not one.** The desk used to name a single take-profit.
   A trader scaling out needs the next levels, so every non-neutral read now
   carries a six-rung ladder (`signal.targets`). Each rung says where its number
@@ -18,6 +45,20 @@ plain: what changed, and why it mattered.
   numbers. The ladder reaches the AI fact sheet (`target_1`..`target_6`) and the
   invention guard's allow-list, so a rung on the card is quotable and a seventh
   number is still rejected as an invention.
+
+### Security
+
+- **RSS is parsed with `defusedxml`.** `xml.etree` will happily expand a
+  crafted entity payload ("billion laughs") in a feed we did not write; the
+  parser now refuses entity expansion and external entities, and a malformed
+  feed returns an empty list instead of raising.
+
+### Engineering
+
+- **One worker, on purpose.** The cache and the rate-limit counter live in
+  memory, so running more than one worker would multiply the effective rate
+  limit and split the cache. This is a single-worker service by design, and
+  `README` says why and what a correct multi-worker setup would need.
 
 ### Fixed
 

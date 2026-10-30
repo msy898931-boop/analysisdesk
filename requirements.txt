@@ -5,3 +5,4 @@ pandas>=2.2
 numpy>=1.26
 pydantic>=2.7
 python-dotenv>=1.0
+defusedxml>=0.7

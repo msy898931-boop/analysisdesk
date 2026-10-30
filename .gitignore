@@ -9,6 +9,12 @@ venv/
 # runtime state: logs, pid files, local env
 .runtime/
 
+# durable store (SQLite) -- local state, never committed
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
 # agent working notes (local only)
 .openhands/
 

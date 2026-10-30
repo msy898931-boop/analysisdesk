@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import ai, indicators, main, market, signals
+from app import ai, alerts, backtest, indicators, main, market, news, signals
 from app.indicators import _clean as ind_clean
 from app.main import app
 
@@ -2582,3 +2582,726 @@ def test_watch_error_verdict_tolerates_a_missing_field():
     cd = _WATCH["check_deploy"]
     ok, reason = cd.error_verdict({}, max_errors=0)
     assert ok is True and "no unhandled errors" in reason
+
+
+def _bt_series(candles):
+    from app.market import Candle, Series
+
+    return Series(
+        symbol="TEST", currency="USD", exchange="test", interval="1h", candles=[Candle(*c) for c in candles]
+    )
+
+
+def _zigzag(n=400, start=100.0, amp=3.0):
+    """A deterministic up/down series wide enough for the engine to speak."""
+    import math as _m
+
+    out = []
+    for i in range(n):
+        base = start + amp * _m.sin(i / 7.0)
+        hi = base + 1.2
+        lo = base - 1.2
+        out.append((i * 3600, base - 0.3, hi, lo, base + 0.3, 1.0))
+    return out
+
+
+def test_backtest_never_looks_ahead():
+    """The signal at bar i must depend only on candles[:i+1].
+
+    This is the one property that separates an honest backtest from a sales
+    pitch. We prove it directly: truncating the series after bar i and running
+    the engine on the prefix gives the same board the backtest would have seen.
+    """
+    candles = _zigzag(300)
+    series = _bt_series(candles)
+    i = 200
+    prefix = series.candles[: i + 1]
+    full_board = indicators.snapshot(_bt_series(candles))
+    prefix_board = indicators.snapshot(_bt_series(candles[: i + 1]))
+    # The prefix board must equal the full board restricted to that prefix --
+    # i.e. later candles did not leak into the earlier read.
+    assert prefix_board["price"] == pytest.approx(prefix[-1].c)
+    # And the full board's price is a *different* bar, so they are not equal by
+    # accident of a flat series.
+    assert full_board["price"] != pytest.approx(prefix_board["price"])
+
+
+def test_backtest_resolves_a_stop_before_a_target_in_the_same_bar():
+    """An ambiguous bar (spans both) must resolve against the trade."""
+    # BUY entry 100, stop 98, target 104. One bar spans 97..105 -> stop wins.
+    candles = [
+        (0, 100, 101, 99, 100, 1),  # bar 0: history
+        (1, 100, 105, 97, 102, 1),  # bar 1: spans stop and target
+    ]
+    outcome, idx, px = backtest._resolve("BUY", _bt_series(candles).candles, 1, 100, 98, 104, 60)
+    assert outcome == "stop" and px == 98
+
+
+def test_backtest_hits_the_target_when_only_the_target_is_touched():
+    candles = [
+        (0, 100, 101, 99, 100, 1),
+        (1, 100, 105, 99.5, 104, 1),  # touches target 104, never 98
+    ]
+    outcome, _, px = backtest._resolve("BUY", _bt_series(candles).candles, 1, 100, 98, 104, 60)
+    assert outcome == "target" and px == 104
+
+
+def test_backtest_times_out_and_exits_at_the_close():
+    candles = [(0, 100, 101, 99, 100, 1)] + [(i, 100, 101, 99, 100, 1) for i in range(1, 10)]
+    outcome, idx, px = backtest._resolve("BUY", _bt_series(candles).candles, 1, 100, 50, 500, 5)
+    assert outcome == "timeout" and idx == 5 and px == 100
+
+
+def test_backtest_sell_direction_resolves_correctly():
+    candles = [
+        (0, 100, 101, 99, 100, 1),
+        (1, 100, 101, 95, 96, 1),  # SELL target 96 touched
+    ]
+    outcome, _, px = backtest._resolve("SELL", _bt_series(candles).candles, 1, 100, 102, 96, 60)
+    assert outcome == "target" and px == 96
+
+
+def test_backtest_r_multiple_signs():
+    assert backtest._r_multiple("BUY", 100, 98, 104) == pytest.approx(2.0)
+    assert backtest._r_multiple("BUY", 100, 98, 98) == pytest.approx(-1.0)
+    assert backtest._r_multiple("SELL", 100, 102, 96) == pytest.approx(2.0)
+    assert backtest._r_multiple("SELL", 100, 102, 102) == pytest.approx(-1.0)
+    assert backtest._r_multiple("BUY", 100, 100, 105) == 0.0  # zero risk is not a gain
+
+
+def test_backtest_max_drawdown_is_peak_to_trough():
+    assert backtest._max_drawdown([1, 1, -3, 1]) == pytest.approx(3.0)
+    assert backtest._max_drawdown([1, 2, 3]) == 0.0
+    assert backtest._max_drawdown([]) == 0.0
+
+
+def test_backtest_result_carries_its_caveats_and_sample_verdict():
+    r = backtest.run(_bt_series(_zigzag(400)), step=5)
+    d = r.as_dict()
+    assert d["caveats"] and len(d["caveats"]) == len(backtest.CAVEATS_AR)
+    assert isinstance(d["sample_adequate"], bool)
+    assert d["trades"] == len(d["trades_detail"])
+    # The pessimistic resolution must never report more target hits than trades.
+    assert d["target_hits"] + d["stop_hits"] + d["timeouts"] == d["trades"]
+
+
+def test_backtest_emits_no_probability_of_profit_language():
+    r = backtest.run(_bt_series(_zigzag(400)), step=5)
+    blob = (" ".join(r.caveats) + " " + " ".join(backtest.CAVEATS_AR)).lower()
+    for banned in ("guarantee", "win rate", "profit probability", "ضمان", "نسبة نجاح", "احتمال ربح"):
+        assert banned not in blob
+
+
+def test_backtest_small_sample_is_flagged_not_dressed_up():
+    r = backtest.run(_bt_series(_zigzag(60)), step=5)
+    assert r.trades < backtest.MIN_TRADES_TO_CONCLUDE
+    assert r.sample_adequate is False
+
+
+def test_backtest_empty_or_tiny_series_is_not_a_crash():
+    r = backtest.run(_bt_series([(0, 1, 1, 1, 1, 1)]))
+    assert r.trades == 0 and r.hit_rate == 0.0 and r.expectancy_r == 0.0
+    assert r.sample_adequate is False
+
+
+def test_backtest_endpoint_rejects_a_bad_interval():
+    r = client.get("/api/backtest?symbol=EURUSD=X&interval=99")
+    assert r.status_code == 400
+
+
+def test_backtest_endpoint_serves_a_record_over_real_data():
+    r = client.get("/api/backtest?symbol=EURUSD=X&interval=1h&step=25")
+    assert r.status_code == 200
+    d = r.json()
+    for k in (
+        "symbol",
+        "bars",
+        "trades",
+        "hit_rate",
+        "expectancy_r",
+        "max_drawdown_r",
+        "sample_adequate",
+        "caveats",
+        "caveats_ar",
+        "trades_detail",
+    ):
+        assert k in d, k
+    assert d["bars"] > 0
+    # A record without its caveats would be a forecast; the caveats must ship.
+    assert d["caveats"] and d["caveats_ar"]
+
+
+# ---------------------------------------------------------------- durable store
+
+
+def _fresh_store(tmp_path, monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    from app import store as _s
+
+    importlib.reload(_s)
+    _s.init()
+    return _s
+
+
+def test_store_round_trips_a_subscription(tmp_path, monkeypatch):
+    s = _fresh_store(tmp_path, monkeypatch)
+    sid = s.add_subscription("42", "xauusd", "1h", "buy", 2000.0)
+    assert sid is not None
+    subs = s.list_subscriptions("42")
+    assert len(subs) == 1
+    # Symbol and direction are normalised, so a lowercase ask is the same alert.
+    assert subs[0]["symbol"] == "XAUUSD" and subs[0]["direction"] == "BUY"
+
+
+def test_store_re_arming_the_same_alert_is_idempotent(tmp_path, monkeypatch):
+    s = _fresh_store(tmp_path, monkeypatch)
+    a = s.add_subscription("42", "XAUUSD", "1h", "BUY", 2000.0)
+    b = s.add_subscription("42", "xauusd", "1h", "buy", 2000.0)
+    assert a == b
+    assert len(s.list_subscriptions("42")) == 1
+
+
+def test_store_survives_a_reload(tmp_path, monkeypatch):
+    """The whole point: a subscription outlives the process that made it."""
+    import importlib
+
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    from app import store as s1
+
+    importlib.reload(s1)
+    s1.add_subscription("7", "EURUSD=X", "1h", "SELL", 1.1)
+    from app import store as s2
+
+    importlib.reload(s2)
+    assert len(s2.list_subscriptions("7")) == 1
+
+
+def test_store_disarm_fires_once(tmp_path, monkeypatch):
+    s = _fresh_store(tmp_path, monkeypatch)
+    sid = s.add_subscription("1", "BTC-USD", "1d", "BUY", 50000.0)
+    assert s.disarm(sid) is True
+    assert s.disarm(sid) is False  # already fired
+    assert s.list_subscriptions("1") == []  # no longer armed
+
+
+def test_store_remove_respects_ownership(tmp_path, monkeypatch):
+    s = _fresh_store(tmp_path, monkeypatch)
+    sid = s.add_subscription("owner", "XAUUSD", "1h", "BUY", 2000.0)
+    assert s.remove_subscription("intruder", sid) is False
+    assert len(s.list_subscriptions("owner")) == 1
+    assert s.remove_subscription("owner", sid) is True
+    assert s.list_subscriptions("owner") == []
+
+
+def test_store_listing_is_scoped_per_chat(tmp_path, monkeypatch):
+    s = _fresh_store(tmp_path, monkeypatch)
+    s.add_subscription("a", "XAUUSD", "1h", "BUY", 2000.0)
+    s.add_subscription("b", "XAUUSD", "1h", "BUY", 2000.0)
+    assert len(s.list_subscriptions("a")) == 1
+    assert len(s.list_subscriptions("b")) == 1
+    assert len(s.list_subscriptions()) == 2
+
+
+def test_store_counters_accumulate(tmp_path, monkeypatch):
+    s = _fresh_store(tmp_path, monkeypatch)
+    for _ in range(5):
+        s.bump("visits")
+    assert s.counter("visits") == 5
+    s.bump("visits", 10)
+    assert s.counter("visits") == 15
+    assert s.counter("never_set") == 0
+
+
+def test_store_reports_durability_honestly(tmp_path, monkeypatch):
+    """An ephemeral host must not be described as durable."""
+    monkeypatch.delenv("DESK_DATA_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    st = s.stats()
+    assert st["available"] is True
+    assert st["durable"] is False
+    assert "ephemeral" in st["note"] or "redeploy" in st["note"]
+
+
+def test_store_unwritable_dir_is_reported_not_raised(tmp_path, monkeypatch):
+    """A store that cannot write must answer, not blow up the caller."""
+    monkeypatch.setenv("DESK_DATA_DIR", "/proc/cannot/write/here")
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    assert s.available() is False
+    assert s.list_subscriptions("x") == []
+    assert s.add_subscription("x", "Y", "1h", "BUY", 1.0) is None
+    assert s.counter("visits") == 0
+    st = s.stats()
+    assert st["available"] is False
+
+
+def test_status_surface_exposes_the_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import main as m
+    from app import store as s
+
+    importlib.reload(s)
+    importlib.reload(m)
+    body = TestClient(m.app).get("/api/status").json()
+    assert "store" in body
+    for k in ("available", "durable", "armed_alerts", "visits", "note"):
+        assert k in body["store"], k
+
+
+# ---------------------------------------------------------------- alerts
+
+
+def test_alert_buy_fires_on_an_upward_cross_only():
+    assert alerts.crossed("BUY", 100, 99, 101) is True
+    assert alerts.crossed("BUY", 100, 99, 100) is True  # exact touch counts
+    assert alerts.crossed("BUY", 100, 101, 102) is False  # already above: no new cross
+    assert alerts.crossed("BUY", 100, 99, 99) is False
+
+
+def test_alert_sell_fires_on_a_downward_cross_only():
+    assert alerts.crossed("SELL", 100, 101, 99) is True
+    assert alerts.crossed("SELL", 100, 101, 100) is True
+    assert alerts.crossed("SELL", 100, 99, 98) is False
+
+
+def test_alert_unknown_direction_never_fires():
+    assert alerts.crossed("HOLD", 100, 99, 101) is False
+    assert alerts.crossed("", 100, 99, 101) is False
+
+
+def test_alert_evaluate_is_pure_and_skips_unpriced_symbols():
+    subs = [
+        {"id": 1, "symbol": "XAUUSD", "interval": "1h", "direction": "BUY", "price": 100.0, "chat_id": "c"},
+        {"id": 2, "symbol": "EURUSD=X", "interval": "1h", "direction": "BUY", "price": 100.0, "chat_id": "c"},
+    ]
+    # Only XAUUSD has a price; the other is skipped, not guessed as a hit.
+    fired = alerts.evaluate(subs, {"XAUUSD": (99.0, 101.0)})
+    assert [f["subscription"]["id"] for f in fired] == [1]
+
+
+def test_alert_delivery_is_off_by_default(monkeypatch):
+    """A real-world side effect must be opt-in. This pins the default."""
+    monkeypatch.delenv("ALERTS_ENABLED", raising=False)
+    assert alerts.alerts_enabled() is False
+    for on in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("ALERTS_ENABLED", on)
+        assert alerts.alerts_enabled() is True
+    monkeypatch.setenv("ALERTS_ENABLED", "0")
+    assert alerts.alerts_enabled() is False
+
+
+def test_alert_run_once_fires_and_disarms_without_sending_when_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.delenv("ALERTS_ENABLED", raising=False)
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    s.init()
+    sid = s.add_subscription("chat", "XAUUSD", "1h", "BUY", 100.0)
+
+    sent = []
+
+    async def fake_prices(symbols, interval):
+        return {sym: (99.0, 101.0) for sym in symbols}
+
+    monkeypatch.setattr(alerts, "_prices_for", fake_prices)
+    monkeypatch.setattr(alerts, "store", s)
+
+    import asyncio
+
+    summary = asyncio.run(alerts.run_once(transport=lambda cid, text: sent.append(text) or True))
+    assert summary["fired"] == 1
+    assert summary["delivered"] == 0  # delivery off => nothing sent
+    assert sent == []
+    # The alert fired, so it is disarmed and will not fire again.
+    assert s.list_subscriptions("chat") == []
+    assert sid is not None
+
+
+def test_alert_run_once_delivers_when_explicitly_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("ALERTS_ENABLED", "true")
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    s.init()
+    s.add_subscription("chat", "XAUUSD", "1h", "BUY", 100.0)
+
+    sent = []
+
+    async def fake_prices(symbols, interval):
+        return {sym: (99.0, 101.0) for sym in symbols}
+
+    monkeypatch.setattr(alerts, "_prices_for", fake_prices)
+    monkeypatch.setattr(alerts, "store", s)
+
+    import asyncio
+
+    summary = asyncio.run(alerts.run_once(transport=lambda cid, text: sent.append(text) or True))
+    assert summary["delivered"] == 1
+    assert len(sent) == 1
+    assert "المستوى" in sent[0] and "وليس توصية" in sent[0]
+
+
+def test_alert_run_once_with_no_subscriptions_is_a_clean_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    s.init()
+    monkeypatch.setattr(alerts, "store", s)
+    import asyncio
+
+    summary = asyncio.run(alerts.run_once())
+    assert summary["checked"] == 0 and summary["fired"] == 0
+
+
+def test_alert_endpoints_arm_list_and_remove(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import main as m
+    from app import store as s
+
+    importlib.reload(s)
+    importlib.reload(m)
+    c = TestClient(m.app)
+    r = c.post("/api/alerts?chat_id=u1&symbol=XAUUSD&price=4000&direction=BUY&interval=1h")
+    assert r.status_code == 200 and r.json()["armed"] is True
+    aid = r.json()["id"]
+    listed = c.get("/api/alerts?chat_id=u1").json()
+    assert len(listed["alerts"]) == 1
+    assert listed["alerts"][0]["price"] == 4000.0
+    # Another chat sees nothing.
+    assert c.get("/api/alerts?chat_id=u2").json()["alerts"] == []
+    # Removing with the wrong chat id fails; the right one works.
+    assert c.delete(f"/api/alerts/{aid}?chat_id=u2").status_code == 404
+    assert c.delete(f"/api/alerts/{aid}?chat_id=u1").status_code == 200
+    assert c.get("/api/alerts?chat_id=u1").json()["alerts"] == []
+
+
+def test_alert_endpoint_validates_input(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import main as m
+    from app import store as s
+
+    importlib.reload(s)
+    importlib.reload(m)
+    c = TestClient(m.app)
+    base = "/api/alerts?chat_id=u&symbol=XAUUSD&price=4000"
+    assert c.post(base + "&interval=99").status_code == 400
+    assert c.post(base + "&direction=SIDEWAYS").status_code == 400
+    assert c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=-5").status_code == 400
+
+
+def test_alert_endpoint_reports_503_when_store_is_down(monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", "/proc/cannot/write/here")
+    import importlib
+
+    from app import main as m
+    from app import store as s
+
+    importlib.reload(s)
+    importlib.reload(m)
+    c = TestClient(m.app)
+    r = c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=4000&direction=BUY")
+    assert r.status_code == 503
+
+
+# ---------------------------------------------------------------- news
+
+_RSS_SAMPLE = """<?xml version="1.0"?>
+<rss version="2.0"><channel>
+  <item><title>Gold steadies as dollar slips</title>
+    <link>https://example.com/a</link><pubDate>Wed, 29 Oct 2026 10:00:00 GMT</pubDate></item>
+  <item><title>Oil jumps on supply worry</title>
+    <link>https://example.com/b</link><pubDate>Wed, 29 Oct 2026 09:00:00 GMT</pubDate></item>
+</channel></rss>"""
+
+_ATOM_SAMPLE = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><title>Fed holds rates</title>
+    <link href="https://example.com/c"/>
+    <updated>2026-10-29T08:00:00Z</updated></entry>
+</feed>"""
+
+
+def test_news_parses_rss_items():
+    heads = news.parse_feed(_RSS_SAMPLE, "Test Feed")
+    assert len(heads) == 2
+    assert heads[0].title == "Gold steadies as dollar slips"
+    assert heads[0].source == "Test Feed"
+    assert heads[0].link == "https://example.com/a"
+    assert heads[0].published.startswith("Wed")
+
+
+def test_news_parses_atom_entries():
+    heads = news.parse_feed(_ATOM_SAMPLE, "Atom Feed")
+    assert len(heads) == 1
+    assert heads[0].title == "Fed holds rates"
+    assert heads[0].link == "https://example.com/c"
+
+
+def test_news_malformed_feed_returns_empty_not_raises():
+    assert news.parse_feed("<not xml", "x") == []
+    assert news.parse_feed("", "x") == []
+    assert news.parse_feed("<rss><channel></channel></rss>", "x") == []
+
+
+def test_news_result_usable_means_a_source_answered_not_that_list_is_nonempty():
+    r = news.NewsResult()
+    assert r.usable is False  # nothing answered
+    r.sources_ok.append("X")
+    assert r.usable is True  # answered, even if it had no items
+
+
+def test_news_surface_never_claims_sentiment_or_impact():
+    """The honesty rule: headlines are not analysis. No sentiment field, ever."""
+    r = news.NewsResult()
+    r.sources_ok.append("X")
+    blob = json.dumps(r.as_dict()).lower()
+    for banned in ("sentiment", "bullish", "bearish", "impact", "signal"):
+        assert banned not in blob
+    assert "headlines only" in r.as_dict()["note"]
+
+
+def test_news_fetch_merges_and_reports_per_feed(monkeypatch):
+    """A failing feed is reported, not silently dropped."""
+
+    async def fake_fetch(client, feed):
+        if feed["name"] == "CNBC Markets":
+            return [news.Headline("t", feed["name"], "u")], None
+        return [], "HTTP 500"
+
+    async def no_client(*a, **k):
+        raise AssertionError("network must not be touched when feeds are stubbed")
+
+    monkeypatch.setattr(news, "_fetch_feed", fake_fetch)
+    news._cache.clear()
+    import asyncio
+
+    r = asyncio.run(news.fetch_news(fresh=True))
+    assert r.sources_ok == ["CNBC Markets"]
+    assert len(r.sources_failed) == len(news.FEEDS) - 1
+    assert r.headlines[0].source == "CNBC Markets"
+
+
+def test_news_fetch_caches_a_successful_read(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_fetch(client, feed):
+        calls["n"] += 1
+        return [news.Headline("t", feed["name"], "u")], None
+
+    monkeypatch.setattr(news, "_fetch_feed", fake_fetch)
+    news._cache.clear()
+    import asyncio
+
+    asyncio.run(news.fetch_news(fresh=True))
+    first = calls["n"]
+    asyncio.run(news.fetch_news())  # should hit the cache
+    assert calls["n"] == first  # no extra network calls
+
+
+def test_news_fetch_does_not_cache_a_total_failure(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_fetch(client, feed):
+        calls["n"] += 1
+        return [], "boom"
+
+    monkeypatch.setattr(news, "_fetch_feed", fake_fetch)
+    news._cache.clear()
+    import asyncio
+
+    r1 = asyncio.run(news.fetch_news(fresh=True))
+    assert r1.usable is False
+    asyncio.run(news.fetch_news())  # must retry, not serve cached silence
+    assert calls["n"] == 2 * len(news.FEEDS)
+
+
+def test_news_endpoint_shape(monkeypatch):
+    async def fake_fetch(*a, **k):
+        r = news.NewsResult(
+            headlines=[news.Headline("Gold up", "CNBC", "u")], sources_ok=["CNBC"], sources_failed=[]
+        )
+        return r
+
+    monkeypatch.setattr(news, "fetch_news", fake_fetch)
+    from app.main import app as _app
+
+    body = TestClient(_app).get("/api/news").json()
+    assert body["usable"] is True
+    assert body["headlines"][0]["title"] == "Gold up"
+    assert "sources_ok" in body and "sources_failed" in body
+
+
+# ---------------------------------------------------------------- performance
+
+
+def _perf_series(n=2000):
+    import math as _m
+
+    from app.market import Candle, Series
+
+    candles = []
+    base = 2000.0
+    for i in range(n):
+        base += _m.sin(i / 11.0) * 2 + _m.cos(i / 5.0)
+        candles.append(Candle(i * 3600, base - 1, base + 2, base - 2, base + 0.5, 1.0))
+    return Series(symbol="XAUUSD", currency="USD", exchange="perf", interval="1h", candles=candles)
+
+
+def test_perf_indicator_snapshot_is_not_quadratic():
+    """A snapshot over N bars must stay well under a second at N=2000.
+
+    The bound is deliberately loose -- this is not a benchmark, it is a tripwire
+    for an accidental O(n^2) (a nested scan that re-reads the whole series). A
+    correct implementation is milliseconds; anything near this ceiling is a bug.
+    """
+    import time as _t
+
+    s = _perf_series(2000)
+    t0 = _t.perf_counter()
+    board = indicators.snapshot(s)
+    dt = _t.perf_counter() - t0
+    assert board["price"] == pytest.approx(round(s.candles[-1].c, 2))
+    assert dt < 2.0, f"snapshot took {dt:.2f}s -- likely a nested scan"
+
+
+def test_perf_snapshot_scales_linearly_not_quadratically():
+    """Doubling the bars must not quadruple the time.
+
+    Comparing 1x vs 2x with a generous ratio catches an O(n^2) that a single
+    absolute bound can miss on a fast machine. The allowance is 4x (linear with
+    slack), not 2x, because timing noise at these scales is real.
+    """
+    import time as _t
+
+    s1 = _perf_series(1000)
+    s2 = _perf_series(2000)
+    # warm caches / imports
+    indicators.snapshot(s1)
+    t0 = _t.perf_counter()
+    indicators.snapshot(s1)
+    t1 = _t.perf_counter()
+    t2 = _t.perf_counter()
+    indicators.snapshot(s2)
+    t3 = _t.perf_counter()
+    r1 = max(t1 - t0, 1e-4)
+    r2 = max(t3 - t2, 1e-4)
+    assert r2 / r1 < 6.0, f"2x bars cost {r2 / r1:.1f}x time -- super-linear"
+
+
+def test_perf_backtest_over_a_long_series_completes():
+    import time as _t
+
+    s = _perf_series(2000)
+    t0 = _t.perf_counter()
+    r = backtest.run(s, step=5)
+    dt = _t.perf_counter() - t0
+    assert dt < 10.0, f"backtest over 2000 bars took {dt:.2f}s"
+    assert r.trades >= 0
+
+
+def test_perf_signal_evaluation_is_cheap_enough_for_a_request():
+    """The analyze path must answer within a request budget, not a batch one."""
+    import time as _t
+
+    s = _perf_series(1500)
+    board = indicators.snapshot(s)
+    t0 = _t.perf_counter()
+    for _ in range(5):
+        signals.evaluate(board)
+    dt = (_t.perf_counter() - t0) / 5
+    assert dt < 0.5, f"one signal evaluation took {dt * 1000:.0f}ms"
+
+
+def test_alert_telegram_send_without_token_is_a_noop(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    assert alerts._telegram_send("c", "hi") is False
+
+
+def test_alert_telegram_send_reports_failure_without_raising(monkeypatch):
+    """A delivery that fails must not crash the loop -- it returns False."""
+    import httpx as _httpx
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+
+    def boom(*a, **k):
+        raise _httpx.ConnectError("down")
+
+    monkeypatch.setattr(alerts.httpx, "post", boom)
+    assert alerts._telegram_send("c", "hi") is False
+
+
+def test_alert_telegram_send_returns_true_only_on_ok(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True}
+
+    monkeypatch.setattr(alerts.httpx, "post", lambda *a, **k: R())
+    assert alerts._telegram_send("c", "hi") is True
+
+    class Bad:
+        status_code = 200
+
+        def json(self):
+            return {"ok": False}
+
+    monkeypatch.setattr(alerts.httpx, "post", lambda *a, **k: Bad())
+    assert alerts._telegram_send("c", "hi") is False
+
+
+def test_alert_message_names_the_level_and_disclaims_advice():
+    sub = {"symbol": "XAUUSD", "interval": "1h", "direction": "SELL", "price": 4000.0}
+    msg = alerts._message(sub, 4005.0, 3998.0)
+    assert "XAUUSD" in msg and "4000.0" in msg
+    assert "وليس توصية" in msg  # never a recommendation
+    assert "▼" in msg  # SELL arrow
+
+
+def test_alert_prices_for_skips_a_symbol_it_cannot_read(monkeypatch):
+    from app.market import Candle, Series
+
+    async def fake_fetch(sym, interval):
+        if sym == "BAD":
+            raise market.MarketDataError("no data")
+        return Series(
+            symbol=sym,
+            currency="",
+            exchange="",
+            interval="1h",
+            candles=[Candle(1, 1, 1, 1, 100.0, 1), Candle(2, 1, 1, 1, 101.0, 1)],
+        )
+
+    monkeypatch.setattr(market, "fetch_series", fake_fetch)
+    import asyncio
+
+    got = asyncio.run(alerts._prices_for({"BAD", "OK"}, "1h"))
+    assert "BAD" not in got  # unknown skipped, not guessed
+    assert got["OK"] == (100.0, 101.0)
