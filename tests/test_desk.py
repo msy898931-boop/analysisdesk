@@ -495,3 +495,31 @@ def test_auth_errors_are_not_retried_as_transient():
     assert text is None
     assert why.startswith("config:")
     assert calls["n"] == 1  # no pointless reasoning_effort retry on auth failure
+
+
+# ------------------------------------------------- computed prices stay clean
+
+def test_swissquote_midpoint_has_no_binary_float_tail():
+    """(bid+ask)/2 gives 4002.2650000000003; the API must not ship that."""
+    payload = [{"spreadProfilePrices": [
+        {"spreadProfile": "premium", "bid": 4002.11, "ask": 4002.42},
+    ]}]
+    mid = market._swissquote_mid(payload)
+    assert mid == 4002.265, mid
+    assert repr(mid) == "4002.265", repr(mid)
+
+
+def test_swissquote_falls_back_to_any_profile_and_still_rounds():
+    """With no named profile, the first usable book is taken — and rounded."""
+    payload = [{"spreadProfilePrices": [
+        {"spreadProfile": "other", "bid": 2350.11, "ask": 2350.42},
+    ]}]
+    mid = market._swissquote_mid(payload)
+    assert mid == 2350.265, mid
+    assert repr(mid) == "2350.265", repr(mid)
+
+
+def test_swissquote_mid_returns_none_on_unusable_payload():
+    for bad in (None, [], [{}], [{"spreadProfilePrices": []}],
+                [{"spreadProfilePrices": [{"bid": 1, "ask": None}]}]):
+        assert market._swissquote_mid(bad) is None

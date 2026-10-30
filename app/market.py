@@ -280,6 +280,16 @@ SPOT_URL = "https://api.gold-api.com/price/{metal}"
 SPOT_METALS = {"XAU", "XAG"}
 
 
+def _round_price(value: float) -> float:
+    """Strip binary-float noise from a computed price.
+
+    (bid + ask) / 2 yields values like 4002.2650000000003 — the true midpoint is
+    4002.265, the tail is float representation. Rounding here keeps the API
+    honest, since the JSON is read by more than the formatter in the UI.
+    """
+    return round(value, 4)
+
+
 def _swissquote_mid(payload) -> float | None:
     """Pick a bid/ask pair from the book and return its midpoint."""
     if not isinstance(payload, list) or not payload:
@@ -288,10 +298,10 @@ def _swissquote_mid(payload) -> float | None:
     for want in ("premium", "prime", "elite"):
         for p in profiles:
             if p.get("spreadProfile") == want and p.get("bid") and p.get("ask"):
-                return (float(p["bid"]) + float(p["ask"])) / 2
+                return _round_price((float(p["bid"]) + float(p["ask"])) / 2)
     for p in profiles:
         if p.get("bid") and p.get("ask"):
-            return (float(p["bid"]) + float(p["ask"])) / 2
+            return _round_price((float(p["bid"]) + float(p["ask"])) / 2)
     return None
 
 
@@ -318,7 +328,8 @@ async def fetch_spot(metal: str) -> dict:
             if r.status_code == 200:
                 body = r.json()
                 return {"metal": metal, "name": body.get("name", metal),
-                        "price": float(body["price"]), "currency": body.get("currency", "USD"),
+                        "price": _round_price(float(body["price"])),
+                        "currency": body.get("currency", "USD"),
                         "updated_at": body.get("updatedAt"), "source": "gold-api"}
             errors.append(f"gold-api: HTTP {r.status_code}")
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
