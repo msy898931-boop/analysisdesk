@@ -156,6 +156,16 @@ _BANNED = ("guarantee", "guaranteed", "win rate", "probability of profit",
            "ضمان", "نسبة نجاح", "احتمال ربح", "مضمون")
 
 
+def _figures(text: str) -> list[str]:
+    """Pull decimal figures out of prose, treating commas as thousand separators.
+
+    The model writes 3,982.69 for a price of 3982.69. A plain \\d+\\.\\d+ scan
+    would read that as 982.69 — a number that is not in the fact set — and reject
+    perfectly correct prose as an invention. Strip the separators first.
+    """
+    return [raw.replace(",", "") for raw in re.findall(r"\d[\d,]*\.\d+", text)]
+
+
 def _verify(text: str, ind: dict, sig: dict) -> str | None:
     """Return a rejection reason if the model's prose contradicts the facts.
 
@@ -179,7 +189,7 @@ def _verify(text: str, ind: dict, sig: dict) -> str | None:
         for f in (str(v), f"{v:.1f}", f"{v:.2f}", f"{v:.3f}", f"{v:.4f}", f"{v:.5f}"):
             allowed.add(f)
 
-    for tok in re.findall(r"\d+\.\d+", text):
+    for tok in _figures(text):
         if tok not in allowed:
             return f"invented a figure not in the report: {tok}"
 

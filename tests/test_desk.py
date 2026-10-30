@@ -552,3 +552,41 @@ def test_snapshot_price_carries_no_float_tail():
     assert board["price"] == 1.11857, board["price"]
     assert repr(board["price"]) == "1.11857", repr(board["price"])
     assert repr(board["prev_close"]) == "100.4", repr(board["prev_close"])
+
+
+# ------------------------------- the invention guard must not cry wolf on commas
+
+def _facts():
+    ind = {"price": 3982.69, "ema20": 4012.87, "ema50": 4023.73, "ema200": 4041.82,
+           "macd": -9.0563, "macd_signal": -8.2219, "support": 3989.01,
+           "resistance": 4028.40, "rsi": 43.42, "stoch_k": 43.03, "atr_pct": 0.329}
+    sig = {"entry": 3982.69, "stop_loss": 4001.68, "take_profit": 3944.70,
+           "confidence": 50.0, "risk_reward": 2.0, "score": -100.0}
+    return ind, sig
+
+
+def test_thousands_separator_is_not_mistaken_for_an_invented_figure():
+    """The model writes 3,982.69 for a price of 3982.69 — that is not an invention."""
+    ind, sig = _facts()
+    prose = "قراءة بيع. السعر 3,982.69 ووقف الخسارة 4,001.68 والهدف 3,944.70."
+    assert ai._verify(prose, ind, sig) is None
+
+
+def test_figures_strips_commas_before_comparing():
+    assert ai._figures("3,982.69") == ["3982.69"]
+    assert ai._figures("1,234,567.89") == ["1234567.89"]
+    assert ai._figures("no numbers here") == []
+
+
+def test_a_genuinely_invented_figure_is_still_rejected():
+    """The fix must not disable the guard it was protecting."""
+    ind, sig = _facts()
+    assert ai._verify("السعر 3982.69 والهدف 3999.99.", ind, sig) is not None
+    reason = ai._verify("السعر 3982.69 والهدف 3999.99.", ind, sig)
+    assert "3999.99" in reason
+
+
+def test_banned_profit_language_is_still_rejected():
+    ind, sig = _facts()
+    assert ai._verify("هذا مضمون الربح", ind, sig) is not None
+    assert ai._verify("guaranteed profit", ind, sig) is not None
