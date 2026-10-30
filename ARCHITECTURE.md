@@ -58,19 +58,27 @@ Rules this layer keeps:
 ### `app/indicators.py` — the math
 
 Pure functions over a `pd.DataFrame`. RSI, MACD, ATR, Bollinger, Stochastic,
-EMA stack, swing support/resistance. `price_decimals` and `_clean` live here and
-are the **single source** of how many decimals a value of a given magnitude
-deserves — the API, the signal text and the browser card all derive from it.
+EMA stack, swing support/resistance (`swing_levels` for the nearest pair,
+`swing_ladder` for every pivot level each side of price). `price_decimals` and
+`_clean` live here and are the **single source** of how many decimals a value of
+a given magnitude deserves — the API, the signal text and the browser card all
+derive from it.
 
 ### `app/signals.py` — the verdict
 
-Turns a board into a `Signal`: a direction, a confidence, an entry/stop/target,
-and a list of rules that each carry the weight they contributed. Two invariants:
+Turns a board into a `Signal`: a direction, a confidence, an entry/stop, and a
+**six-target scale-out ladder**, plus a list of rules that each carry the weight
+they contributed. Two invariants:
 
 - **`confidence` is indicator agreement, not a probability of profit.** The word
   "probability" does not appear on any surface; a test asserts it.
 - **No majority means NEUTRAL**, and a broken board (non-finite ATR, zero or
   negative price) means NEUTRAL with a warning — never a fabricated direction.
+
+Each rung of the ladder carries its **provenance**: `level` for a pivot the
+market printed (`indicators.swing_ladder`), `projection` for a rung one
+stop-distance beyond the last real level. `take_profit` is TP1. A neutral read
+has no ladder.
 
 ### `app/ai.py` — prose only
 

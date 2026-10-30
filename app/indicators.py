@@ -56,8 +56,8 @@ def stochastic(df: pd.DataFrame, period: int = 14, smooth: int = 3):
     return k, k.rolling(smooth).mean()
 
 
-def swing_levels(df: pd.DataFrame, lookback: int = 40, wing: int = 3) -> tuple[float, float]:
-    """Nearest support below and resistance above, from actual pivot highs/lows."""
+def _pivots(df: pd.DataFrame, lookback: int, wing: int):
+    """Pivot highs/lows in the window, plus the last close."""
     window = df.tail(lookback)
     highs, lows = [], []
     h, l = window["high"].to_numpy(), window["low"].to_numpy()
@@ -66,10 +66,30 @@ def swing_levels(df: pd.DataFrame, lookback: int = 40, wing: int = 3) -> tuple[f
             highs.append(float(h[i]))
         if l[i] == min(l[i - wing : i + wing + 1]):
             lows.append(float(l[i]))
-    price = float(window["close"].iloc[-1])
+    return highs, lows, float(window["close"].iloc[-1]), window
+
+
+def swing_levels(df: pd.DataFrame, lookback: int = 40, wing: int = 3) -> tuple[float, float]:
+    """Nearest support below and resistance above, from actual pivot highs/lows."""
+    highs, lows, price, window = _pivots(df, lookback, wing)
     support = max([x for x in lows if x < price], default=float(window["low"].min()))
     resistance = min([x for x in highs if x > price], default=float(window["high"].max()))
     return support, resistance
+
+
+def swing_ladder(df: pd.DataFrame, lookback: int = 60, wing: int = 3) -> tuple[list[float], list[float]]:
+    """Every pivot level above and below the last close, nearest first.
+
+    swing_levels answers "the nearest" only. A scale-out plan needs the next
+    several, so this returns the whole ladder: resistances ascending above the
+    price, supports descending below it. These are real pivot highs/lows the
+    market printed, not projections -- so a target snapped to one carries the
+    market's own provenance instead of an invented number.
+    """
+    highs, lows, price, _ = _pivots(df, lookback, wing)
+    resistances = sorted({x for x in highs if x > price})
+    supports = sorted({x for x in lows if x < price}, reverse=True)
+    return supports, resistances
 
 
 def price_decimals(v: float) -> int:
@@ -115,6 +135,7 @@ def snapshot(series: Series) -> dict:
     a = atr(df)
     ema20, ema50, ema200 = ema(close, 20), ema(close, 50), ema(close, 200)
     support, resistance = swing_levels(df)
+    supports, resistances = swing_ladder(df)
 
     price = float(close.iloc[-1])
     band = float(bb_up.iloc[-1] - bb_low.iloc[-1])
@@ -154,5 +175,9 @@ def snapshot(series: Series) -> dict:
         "atr_pct": _clean(float(a.iloc[-1]) / price * 100, 3) if price else float("nan"),
         "support": _clean(support),
         "resistance": _clean(resistance),
+        # The full ladder, cleaned to the one precision rule, so the signal
+        # engine can snap scale-out targets onto real pivot levels.
+        "supports": [_clean(x) for x in supports],
+        "resistances": [_clean(x) for x in resistances],
         "candles": len(df),
     }

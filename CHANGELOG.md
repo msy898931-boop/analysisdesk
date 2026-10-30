@@ -5,6 +5,20 @@ plain: what changed, and why it mattered.
 
 ## Unreleased
 
+### Added
+
+- **Six targets per trade, not one.** The desk used to name a single take-profit.
+  A trader scaling out needs the next levels, so every non-neutral read now
+  carries a six-rung ladder (`signal.targets`). Each rung says where its number
+  came from: `level` when it sits on a pivot the market actually printed, and
+  `projection` when the pivots ran out and the rung is one stop-distance beyond
+  the last. The two are labelled apart on the card — calling both "target" would
+  report an assumption as a level. `take_profit` stays TP1, so nothing that read
+  it before changed meaning. A neutral read has an empty ladder, not six invented
+  numbers. The ladder reaches the AI fact sheet (`target_1`..`target_6`) and the
+  invention guard's allow-list, so a rung on the card is quotable and a seventh
+  number is still rejected as an invention.
+
 ### Fixed
 
 - **The price the desk showed was not the price the user's broker shows.**

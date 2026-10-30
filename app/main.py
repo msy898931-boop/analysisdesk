@@ -27,7 +27,7 @@ from . import ai, errors, indicators, market, signals
 
 load_dotenv()
 
-app = FastAPI(title="AnalysisDesk", version="1.0.0")
+app = FastAPI(title="AnalysisDesk", version="1.1.0")
 WEB = Path(__file__).resolve().parent.parent / "web"
 
 # Process-level counters for the diagnostics surface. `_served` counts responses

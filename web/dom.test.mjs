@@ -61,6 +61,22 @@ const GOLD = {
   anchor: { ok: true, factor: 0.99817, pct: -0.183, source: "Swissquote" },
 };
 
+// A read carrying the six-target scale-out ladder: four rungs on real pivot
+// levels and two volatility projections. The card must show all six and mark
+// which is which.
+const LADDER = {
+  ...READ, symbol: "XAUUSD",
+  signal: { ...READ.signal, entry: 3900, stop_loss: 3880, take_profit: 3920,
+            risk_reward: 1, targets: [
+    { index: 1, price: 3920, rr: 1.0, kind: "level", source_en: "market pivot level", source_ar: "مستوى ارتكاز فعلي في السوق" },
+    { index: 2, price: 3945, rr: 2.25, kind: "level", source_en: "market pivot level", source_ar: "مستوى ارتكاز فعلي في السوق" },
+    { index: 3, price: 3970, rr: 3.5, kind: "level", source_en: "market pivot level", source_ar: "مستوى ارتكاز فعلي في السوق" },
+    { index: 4, price: 3990, rr: 4.5, kind: "projection", source_en: "volatility projection — no level there", source_ar: "امتداد تقلّب — لا مستوى هناك" },
+    { index: 5, price: 4010, rr: 5.5, kind: "projection", source_en: "volatility projection — no level there", source_ar: "امتداد تقلّب — لا مستوى هناك" },
+    { index: 6, price: 4030, rr: 6.5, kind: "level", source_en: "market pivot level", source_ar: "مستوى ارتكاز فعلي في السوق" },
+  ] },
+};
+
 // Load app.js in a sandbox whose global is a small window. A bare name that is
 // not a binding and not on this object throws a ReferenceError -- exactly what
 // a browser does for `sym`, and the TypeError it did for `status`.
@@ -146,4 +162,26 @@ test("the footer names the venue that actually supplied the candles", async () =
   await new Promise(r => setTimeout(r, 0));
   assert.match(els.footline.textContent, /Kraken PAXG\/USD/);
   assert.doesNotMatch(els.footline.textContent, /Yahoo/);
+});
+
+test("the card renders all six targets, each labelled with its source", async () => {
+  // The user asked for six targets. Each rung must say whether it sits on a real
+  // pivot or is a volatility projection -- calling both "target" would report an
+  // assumption as a level.
+  const { els } = await boot({ read: LADDER });
+  els.go.onclick();
+  await new Promise(r => setTimeout(r, 0));
+  for (const n of [1, 2, 3, 4, 5, 6]) {
+    assert.match(els.out.innerHTML, new RegExp(`هدف ${n}`), `target ${n} missing`);
+  }
+  assert.match(els.out.innerHTML, /مستوى ارتكاز/);   // a level rung
+  assert.match(els.out.innerHTML, /امتداد تقلّب/);    // a projection rung
+});
+
+test("a read without a ladder renders no ladder section", async () => {
+  // A neutral read has no plan. The section must be absent, not an empty shell.
+  const { els } = await boot();  // READ has no signal.targets
+  els.go.onclick();
+  await new Promise(r => setTimeout(r, 0));
+  assert.doesNotMatch(els.out.innerHTML, /الأهداف الستة/);
 });

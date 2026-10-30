@@ -76,6 +76,28 @@ class Warning:
 
 
 @dataclass
+class Target:
+    """One rung of the scale-out ladder.
+
+    `kind` says where the number came from, because the two are not the same
+    claim: "level" is a pivot the market actually printed, "projection" is the
+    stop distance carried forward when no level exists there. A ladder that
+    called both "target" would be reporting an unknown as a known.
+    """
+
+    index: int
+    price: float
+    rr: float
+    kind: str  # "level" | "projection"
+    source_en: str
+    source_ar: str
+
+    def as_dict(self) -> dict:
+        return {"index": self.index, "price": self.price, "rr": self.rr,
+                "kind": self.kind, "source_en": self.source_en, "source_ar": self.source_ar}
+
+
+@dataclass
 class Signal:
     direction: str
     score: float
@@ -86,10 +108,59 @@ class Signal:
     risk_reward: float
     rules: list[Rule]
     warnings: list[Warning]
+    targets: list[Target] | None = None
 
 
 def _rule(name: str, vote: str, weight: int, en: str, ar: str) -> Rule:
     return Rule(name=name, vote=vote, weight=weight, detail_en=en, detail_ar=ar)
+
+
+TARGET_COUNT = 6
+
+
+def _ladder(direction: str, price: float, stop: float,
+            first: tuple[float, bool], levels: list[float]) -> list[Target]:
+    """Build the scale-out ladder: TP1 plus `TARGET_COUNT - 1` further rungs.
+
+    `first` is (price, is_level): the take-profit the engine already chose, and
+    whether it landed on a real pivot. Real pivot levels are used before
+    projections, so a rung that lands on one is labelled "level" and carries the
+    market's own provenance. When the levels run out the remaining rungs continue
+    one stop-distance apart and are labelled "projection" -- a stated assumption,
+    never dressed up as a level.
+    """
+    sign = 1 if direction == "BUY" else -1
+    risk = abs(price - stop)
+    out: list[Target] = []
+
+    def push(value: float, is_level: bool) -> None:
+        rr = round(abs(value - price) / risk, 2) if risk else 0.0
+        out.append(Target(
+            index=len(out) + 1,
+            price=_r(value),
+            rr=_r(rr, 2),
+            kind="level" if is_level else "projection",
+            source_en=("market pivot level" if is_level
+                       else "volatility projection — no level there"),
+            source_ar=("مستوى ارتكاز فعلي في السوق" if is_level
+                       else "امتداد تقلّب — لا مستوى هناك"),
+        ))
+
+    push(first[0], first[1])
+
+    # Real levels beyond TP1, nearest first, skipping any that would sit at or
+    # behind the previous rung.
+    for lvl in levels:
+        if len(out) >= TARGET_COUNT:
+            break
+        if (lvl - out[-1].price) * sign > 0:
+            push(lvl, True)
+
+    # Then projections, one stop-distance apart, until the ladder is full.
+    while len(out) < TARGET_COUNT:
+        push(out[-1].price + sign * risk, False)
+
+    return out
 
 
 def evaluate(ind: dict) -> Signal:
@@ -255,12 +326,15 @@ def evaluate(ind: dict) -> Signal:
     # Stops are volatility-scaled from real ATR, not a fixed pip guess.
     atr = ind["atr"]
     min_reward = 2 * atr
+    targets: list[Target] = []
     if direction == "BUY":
         stop = price - 1.5 * atr
         if ind["resistance"] - price >= min_reward:
             target = ind["resistance"]
+            first_is_level = True
         else:
             target = price + 3 * atr
+            first_is_level = False
             warnings.append(Warning(
                 "thin_upside",
                 f"nearest resistance {_f(ind['resistance'])} is closer than 2×ATR — "
@@ -268,12 +342,15 @@ def evaluate(ind: dict) -> Signal:
                 f"أقرب مقاومة {_f(ind['resistance'])} أقرب من ضعف ATR — "
                 "حُسب الهدف من التقلب بدلاً منها، والمساحة الصاعدة ضيقة",
             ))
+        levels = [x for x in ind.get("resistances", []) if x > price]
     elif direction == "SELL":
         stop = price + 1.5 * atr
         if price - ind["support"] >= min_reward:
             target = ind["support"]
+            first_is_level = True
         else:
             target = price - 3 * atr
+            first_is_level = False
             warnings.append(Warning(
                 "thin_downside",
                 f"nearest support {_f(ind['support'])} is closer than 2×ATR — "
@@ -281,8 +358,14 @@ def evaluate(ind: dict) -> Signal:
                 f"أقرب دعم {_f(ind['support'])} أقرب من ضعف ATR — "
                 "حُسب الهدف من التقلب بدلاً منه، والمساحة الهابطة ضيقة",
             ))
+        levels = sorted([x for x in ind.get("supports", []) if x < price], reverse=True)
     else:
         stop = target = price
+        first_is_level = False
+        levels = []
+
+    if direction != "NEUTRAL":
+        targets = _ladder(direction, price, stop, (target, first_is_level), levels)
 
     risk = abs(price - stop)
     reward = abs(target - price)
@@ -304,6 +387,7 @@ def evaluate(ind: dict) -> Signal:
         risk_reward=_r(rr, 2),
         rules=rules,
         warnings=warnings,
+        targets=targets,
     )
 
 
@@ -316,6 +400,7 @@ def signal_dict(sig: Signal) -> dict:
         "stop_loss": sig.stop_loss,
         "take_profit": sig.take_profit,
         "risk_reward": sig.risk_reward,
+        "targets": [t.as_dict() for t in (sig.targets or [])],
         "rules": [r.as_dict() for r in sig.rules],
         "warnings": [w.as_dict() for w in sig.warnings],
     }

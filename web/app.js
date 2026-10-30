@@ -16,7 +16,9 @@ const T = {
       neutral_note:"المؤشرات متعارضة — القراءة الأمينة هي عدم الدخول.",
       sig:"إشارة",agree:"توافق",model:"الموديل",det:"تفسير محسوب",failed:"تعذّر قراءة السوق",
       instrument:"الأداة",spot:"السبوت",futures:"عقد آجل",basis:"الفرق عن السبوت",chart_src:"مصدر الشموع",
-      anchor:"الإرساء على السبوت",anchor_na:"غير مُرسّى"},
+      anchor:"الإرساء على السبوت",anchor_na:"غير مُرسّى",
+      targets:"الأهداف الستة (خروج تدريجي)",tp_short:"هدف",src:"المصدر",
+      lvl:"مستوى ارتكاز",proj:"امتداد تقلّب"},
   en:{title:"AnalysisDesk",tagline:"Transparent technical analysis on real market data",go:"Analyze",
       reading:"Market read",agreement:"Indicator agreement",entry:"Entry",sl:"Stop loss",
       tp:"Target",rr:"Risk/Reward",support:"Support",resistance:"Resistance",atr:"Volatility (ATR)",
@@ -30,7 +32,9 @@ const T = {
       neutral_note:"Indicators conflict — the honest call is to stand aside.",
       sig:"Signal",agree:"Agreement",model:"Model",det:"Computed explanation",failed:"Could not read the market",
       instrument:"Instrument",spot:"Spot",futures:"Futures",basis:"Basis vs spot",chart_src:"Candle source",
-      anchor:"Anchored to spot",anchor_na:"Not anchored"},
+      anchor:"Anchored to spot",anchor_na:"Not anchored",
+      targets:"Six targets (scale out)",tp_short:"Target",src:"Source",
+      lvl:"Pivot level",proj:"Volatility projection"},
 };
 let LANG="ar", SYMS=[], IVS={}, BUSY=false;
 
@@ -163,6 +167,23 @@ function paint(d){
 
   const warns = s.warnings.map(w=>`<div class="warn">⚠ ${esc(LANG==="ar"?w.ar:w.en)}</div>`).join("");
 
+  // The scale-out ladder. Each rung names where its number came from: a real
+  // pivot the market printed, or a stated volatility projection. Collapsing the
+  // two into one word "target" would report an assumption as a level.
+  const tgts = Array.isArray(s.targets)?s.targets:[];
+  const ladder = tgts.length ? `
+    <div class="h" style="margin-top:18px"><h2>${t.targets}</h2></div>
+    <div class="ladder">${tgts.map(g=>{
+      const isLvl = g.kind==="level";
+      const src = LANG==="ar"?g.source_ar:g.source_en;
+      return `<div class="rung ${isLvl?"lvl":"proj"}">
+        <span class="n">${t.tp_short} ${g.index}</span>
+        <b class="px">${fmt(g.price)}</b>
+        <span class="rr">${t.rr} ${g.rr}</span>
+        <span class="tag">${isLvl?t.lvl:t.proj}<i>${esc(src)}</i></span>
+      </div>`;
+    }).join("")}</div>` : "";
+
   const aiMeta = d.narrative.source==="model"
       ? `<span>${t.model}: ${esc(d.narrative.model)}</span>`
       : `<span>${t.det}${d.narrative.note?(" · "+esc(d.narrative.note)):""}</span>`;
@@ -222,6 +243,7 @@ function paint(d){
         <div><span>${t.support}</span><b>${fmt(i.support)}</b></div>
         <div><span>${t.resistance}</span><b>${fmt(i.resistance)}</b></div>
       </div>
+      ${ladder}
       <div class="h" style="margin-top:18px"><h2>${t.chart}</h2>
         <span class="sub" style="color:var(--dim);font-size:11.5px">${esc(d.interval)}</span></div>
       <canvas id="cv" role="img" aria-label="${esc(chartAlt(d, s))}"></canvas>

@@ -34,6 +34,9 @@ def _board(**over) -> dict:
         "stoch_k": 55.0, "stoch_d": 50.0,
         "atr": 1.0, "atr_pct": 1.0,
         "support": 95.0, "resistance": 110.0, "candles": 500,
+        # The pivot ladder the scale-out targets snap onto. Real pivot prices,
+        # not projections, so a rung that lands on one is a "level".
+        "supports": [98.0, 95.0], "resistances": [104.0, 110.0, 118.0, 130.0],
     }
     base.update(over)
     return base
@@ -105,6 +108,72 @@ def test_undefined_atr_blocks_signal():
     assert any("volatility is undefined" in w.en for w in sig.warnings)
 
 
+# ------------------------------------------------------- the six-target ladder
+
+def test_signal_carries_six_targets_on_a_buy():
+    """The user asked for six targets, not one. Every non-neutral read has them."""
+    d = signals.signal_dict(signals.evaluate(_board()))
+    assert [t["index"] for t in d["targets"]] == [1, 2, 3, 4, 5, 6]
+
+
+def test_six_targets_are_ordered_beyond_entry_and_stop():
+    """A scale-out ladder that is not monotone is not a ladder."""
+    buy = signals.signal_dict(signals.evaluate(_board()))["targets"]
+    assert buy[0]["price"] > 0
+    for a, b in zip(buy, buy[1:], strict=False):
+        assert b["price"] > a["price"], "BUY targets must ascend"
+        assert b["rr"] > a["rr"], "reward must grow with distance"
+    sell = signals.signal_dict(signals.evaluate(_board(
+        price=90.0, ema20=95.0, ema50=97.0, ema200=99.0, macd=-0.5,
+        macd_signal=-0.2, macd_hist=-0.3, rsi=35.0, bb_position=0.05,
+        stoch_k=15.0, stoch_d=25.0, support=85.0, resistance=95.0,
+        supports=[80.0, 85.0], resistances=[92.0],
+    )))["targets"]
+    for a, b in zip(sell, sell[1:], strict=False):
+        assert b["price"] < a["price"], "SELL targets must descend"
+
+
+def test_targets_snap_onto_real_levels_before_projecting():
+    """A rung on a pivot the market printed says so; the rest admit a projection."""
+    d = signals.signal_dict(signals.evaluate(_board()))
+    kinds = [t["kind"] for t in d["targets"]]
+    assert "level" in kinds and "projection" in kinds
+    # TP1 is the nearest resistance; the ladder continues to the levels beyond it,
+    # skipping 104 which sits behind TP1 at 110.
+    levels = [t["price"] for t in d["targets"] if t["kind"] == "level"]
+    assert levels == [110.0, 118.0, 130.0]
+    for t in d["targets"]:
+        if t["kind"] == "level":
+            assert t["price"] in (104.0, 110.0, 118.0, 130.0)
+        else:
+            assert "projection" in t["source_en"]
+
+
+def test_the_first_target_is_the_old_take_profit():
+    """take_profit stays TP1 so every existing consumer keeps its meaning."""
+    d = signals.signal_dict(signals.evaluate(_board()))
+    assert d["targets"][0]["price"] == d["take_profit"]
+
+
+def test_neutral_read_has_no_ladder():
+    """No direction means no plan; an empty ladder, not six invented numbers."""
+    d = signals.signal_dict(signals.evaluate(_board(
+        price=90.0, ema20=95.0, ema50=97.0, ema200=99.0,
+        macd=0.5, macd_signal=0.3, macd_hist=0.2,
+        rsi=55.0, bb_position=0.5, stoch_k=55.0, stoch_d=50.0,
+        support=85.0, resistance=95.0,
+    )))
+    assert d["direction"] == "NEUTRAL"
+    assert d["targets"] == []
+
+
+def test_ladder_prices_carry_no_float_tail():
+    """The rungs are shown to a user; they round by the one precision rule."""
+    d = signals.signal_dict(signals.evaluate(_board()))
+    for t in d["targets"]:
+        assert round(t["price"], 2) == t["price"], t
+
+
 def test_short_history_is_disclosed():
     sig = signals.evaluate(_board(ema200=float("nan"), candles=50))
     assert any("not enough history" in w.en for w in sig.warnings)
@@ -161,6 +230,29 @@ def test_swing_levels_bracket_the_price():
     })
     s, r = indicators.swing_levels(df)
     assert s <= df["close"].iloc[-1] <= r
+
+
+def test_swing_ladder_returns_every_level_nearest_first():
+    """The nearest-only helper cannot feed a scale-out plan; the ladder can."""
+    import pandas as pd
+    n = 160
+    close = [100 + 10 * math.sin(i / 7) for i in range(n)]
+    df = pd.DataFrame({
+        "high": [c + 1 for c in close],
+        "low": [c - 1 for c in close],
+        "close": close,
+    })
+    price = df["close"].iloc[-1]
+    supports, resistances = indicators.swing_ladder(df)
+    assert supports and resistances
+    assert all(x < price for x in supports) and all(x > price for x in resistances)
+    # Ascending above, descending below: the order the ladder is consumed in.
+    assert resistances == sorted(resistances)
+    assert supports == sorted(supports, reverse=True)
+    # They are real pivot prices, so the nearest ones match the nearest-only call.
+    s, r = indicators.swing_levels(df)
+    assert resistances[0] == pytest.approx(r)
+    assert supports[0] == pytest.approx(s)
 
 
 # ----------------------------------------------------------- offline narrative
@@ -648,6 +740,27 @@ def test_bollinger_position_from_production_is_accepted():
 def test_guard_still_rejects_a_number_absent_from_the_sheet():
     ind, sig = _real_facts()
     assert ai._verify("The target is 3999.99.", ind, sig) is not None
+
+
+# --------------------------- the ladder must be quotable, not treated as invented
+
+def test_the_ladder_reaches_the_fact_sheet_and_the_guard():
+    """If a target is on the card, the model may quote it -- it must not be rejected."""
+    ind = _board()
+    sig = signals.signal_dict(signals.evaluate(ind))
+    sheet = ai._sheet_text(ind, sig)
+    assert "target_1=" in sheet and "target_6=" in sheet
+    for tgt in sig["targets"]:
+        tok = ai._n(tgt["price"])
+        assert tok in sheet
+        assert ai._verify(f"Target {tgt['index']} is {tok}.", ind, sig) is None, tok
+
+
+def test_guard_still_rejects_a_seventh_invented_target():
+    """The ladder has six rungs; a seventh number is still an invention."""
+    ind = _board()
+    sig = signals.signal_dict(signals.evaluate(ind))
+    assert ai._verify("A seventh target sits at 999.99.", ind, sig) is not None
 
 
 def test_allowed_figures_survives_a_partial_report():

@@ -32,6 +32,8 @@ SYSTEM_AR = """أنت محلل أسواق تكتب تفسيراً مختصراً
   ABOVE تعني أن السعر أعلى، BELOW تعني أن السعر أدنى.
 - لا تعد بأرباح ولا تذكر "ضمان" أو "نسبة نجاح" أو "احتمال ربح". الثقة هنا تعني فقط توافق المؤشرات.
 - لا تعطِ نصيحة استثمارية شخصية. اذكر بوضوح أن هذا تحليل تقني آلي وليس توصية.
+- الأهداف مرتّبة (target_1 .. target_6). اذكر أن الخطة تخرج على مراحل عند هذه الأهداف،
+  ولا تخترع هدفاً سابعاً ولا تعِد بربح.
 - اكتب 3 إلى 5 أسطر، بجمل قصيرة، بالعربية الفصحى المبسطة.
 """
 
@@ -44,6 +46,8 @@ Strict rules:
 - Never promise profit, never mention "guarantee", "win rate" or "probability of profit".
   Confidence here means indicator agreement only.
 - Give no personal investment advice. State plainly this is automated technical analysis, not a recommendation.
+- Targets are ranked (target_1 .. target_6). You may say the plan scales out at these
+  levels; never invent a seventh target and never promise profit.
 - Write 3 to 5 sentences in plain English.
 """
 
@@ -71,6 +75,9 @@ def _fact_sheet(symbol: str, interval: str, ind: dict, sig: dict, lang: str) -> 
         f"entry={_n(sig['entry'])}", f"stop_loss={_n(sig['stop_loss'])}",
         f"take_profit={_n(sig['take_profit'])}", f"risk_reward={sig['risk_reward']}",
     ]
+    for tgt in sig.get("targets") or []:
+        rows.append(f"target_{tgt['index']}={_n(tgt['price'])} "
+                    f"(risk_reward={tgt['rr']}, source: {tgt['source_en']})")
     for r in sig["rules"]:
         if r["weight"]:
             rows.append(f"rule {r['name']}: {r['vote'].upper()} weight={r['weight']}")
@@ -130,8 +137,9 @@ def _offline_narrative(sig: dict, ind: dict, lang: str) -> str:
                 tail = " نسبة المخاطرة إلى العائد منخفضة."
                 break
         return (f"قراءة {verb} مع توافق مؤشرات {sig['confidence']}%. "
-                f"السعر {_n(ind['price'])}، وقف الخسارة {_n(sig['stop_loss'])}، الهدف {_n(sig['take_profit'])} "
-                f"(نسبة مخاطرة/عائد {sig['risk_reward']}).{tail} "
+                f"السعر {_n(ind['price'])}، وقف الخسارة {_n(sig['stop_loss'])}، "
+                f"والأهداف الستة تبدأ عند {_n(sig['take_profit'])} "
+                f"(نسبة مخاطرة/عائد {sig['risk_reward']} على الهدف الأول).{tail} "
                 "هذا تحليل تقني آلي وليس توصية استثمارية.")
     if sig["direction"] == "NEUTRAL":
         return ("No clear direction: the indicators conflict, and the honest read is to stand aside. "
@@ -145,8 +153,9 @@ def _offline_narrative(sig: dict, ind: dict, lang: str) -> str:
             tail = " Risk/reward is on the low side."
             break
     return (f"{verb.upper()} read with {sig['confidence']}% indicator agreement. "
-            f"Price {_n(ind['price'])}, stop {_n(sig['stop_loss'])}, target {_n(sig['take_profit'])} "
-            f"(risk/reward {sig['risk_reward']}).{tail} "
+            f"Price {_n(ind['price'])}, stop {_n(sig['stop_loss'])}, "
+            f"and the six targets start at {_n(sig['take_profit'])} "
+            f"(risk/reward {sig['risk_reward']} at the first).{tail} "
             "Automated technical analysis, not investment advice.")
 
 
@@ -210,6 +219,9 @@ def _allowed_figures(ind: dict, sig: dict) -> set[str]:
     for key in ("entry", "stop_loss", "take_profit", "confidence",
                 "risk_reward", "score"):
         add(sig.get(key))
+    for tgt in sig.get("targets") or []:
+        add(tgt.get("price"))
+        add(tgt.get("rr"))
     return allowed
 
 
