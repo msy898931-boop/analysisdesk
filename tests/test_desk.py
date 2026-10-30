@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import ai, indicators, market, signals
+from app.indicators import _clean as ind_clean
 from app.main import app
 
 client = TestClient(app)
@@ -304,7 +305,8 @@ def test_narrate_falls_back_when_model_contradicts(monkeypatch):
 
 
 def test_price_formatting_has_no_float_noise():
-    assert ai._n(1.118067979812622) == "1.1181"
+    # EUR/USD keeps pipette precision; the API reports the same 5 decimals.
+    assert ai._n(1.118067979812622) == "1.11807"
     assert ai._n(79128.453125) == "79,128.45"
     assert ai._n(4033.300048828125) == "4,033.30"
     assert ai._n(0.51234567) == "0.51235"
@@ -638,3 +640,50 @@ def test_allowed_figures_survives_a_partial_report():
     """A missing key must shrink the allow-list, not raise."""
     allowed = ai._allowed_figures({"price": 100.5}, {})
     assert "100.5" in allowed
+
+
+# ------------------------- rounding scales with magnitude, so tails cannot hide
+
+def test_clean_removes_tail_from_large_numbers():
+    """A fixed 5 decimals left 3992.80005 intact; precision must scale down."""
+    assert ind_clean(3992.80005) == 3992.80
+    assert ind_clean(78073.54688) == 78073.55
+    assert ind_clean(7720.39014) == 7720.39
+    assert ind_clean(4002.265) == 4002.26
+
+
+def test_clean_keeps_fine_precision_for_small_numbers():
+    """EUR/USD needs its decimals — do not over-round the small ones."""
+    assert ind_clean(1.1185681819915771) == 1.11857
+    assert ind_clean(1.11907) == 1.11907
+
+
+def test_clean_keeps_mid_range_precision():
+    assert ind_clean(57.23456) == 57.2346
+    assert ind_clean(9.87654) == 9.87654
+
+
+def test_api_and_prose_round_by_the_same_rule():
+    """The drift that bit twice: two copies of one rule disagreeing."""
+    for v in (3992.80005, 78073.54688, 1.1185681819915771, 57.23456, 4005.96):
+        assert float(ai._n(v).replace(",", "")) == ind_clean(v), v
+
+
+def test_clean_still_returns_nan_for_non_finite():
+    assert math.isnan(ind_clean(float("nan")))
+    assert math.isnan(ind_clean(float("inf")))
+
+
+def test_clean_respects_a_tighter_digit_cap():
+    assert ind_clean(57.23456, 2) == 57.23
+
+
+def test_guard_accepts_the_rounded_price_it_shows():
+    """After rounding, the value the sheet prints must still pass _verify."""
+    ind, sig = _real_facts()
+    ind["price"] = ind_clean(3992.80005)
+    ind["support"] = ind_clean(3992.80005)
+    ind["resistance"] = ind_clean(4028.40014)
+    sheet = ai._sheet_text(ind, sig)
+    for tok in ai._figures(sheet):
+        assert ai._verify(f"value {tok}", ind, sig) is None, tok

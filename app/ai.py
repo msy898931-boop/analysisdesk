@@ -14,6 +14,8 @@ import re
 
 import httpx
 
+from .indicators import price_decimals
+
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Primary first; the rest are fallbacks so one exhausted quota does not blind the desk.
 MODELS = [m.strip() for m in os.getenv(
@@ -80,22 +82,18 @@ def _fact_sheet(symbol: str, interval: str, ind: dict, sig: dict, lang: str) -> 
     return header + "\n" + "\n".join(rows)
 
 
-def _n(v, digits: int = 4) -> str:
-    """Format a price for prose: enough precision, no float noise."""
+def _n(v, digits: int = 5) -> str:
+    """Format a price for prose: enough precision, no float noise.
+
+    Precision comes from indicators.price_decimals so the prose and the API
+    round by the same rule instead of two hand-kept copies of it. The old
+    default cap of 4 clipped EUR/USD to 1.1186 while the API said 1.11857.
+    """
     try:
         f = float(v)
     except (TypeError, ValueError):
         return str(v)
-    a = abs(f)
-    if a >= 1000:
-        decimals = 2
-    elif a >= 10:
-        decimals = 3
-    elif a >= 1:
-        decimals = 4
-    else:
-        decimals = 5
-    decimals = min(decimals, digits) if a >= 1 else decimals
+    decimals = min(price_decimals(f), digits)
     return f"{f:,.{decimals}f}"
 
 

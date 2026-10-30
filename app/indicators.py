@@ -72,10 +72,35 @@ def swing_levels(df: pd.DataFrame, lookback: int = 40, wing: int = 3) -> tuple[f
     return support, resistance
 
 
+def price_decimals(v: float) -> int:
+    """Decimals worth showing for a value of this magnitude.
+
+    Single source of truth for both the API rounding (_clean) and the prose
+    (_n in ai.py). They were separate rules that disagreed — the API said
+    1.11857 while the prose said 1.1186 — which is the same drift that let the
+    invention guard fall out of step with the fact sheet.
+    """
+    a = abs(float(v))
+    if a >= 1000:
+        return 2
+    if a >= 100:
+        return 3
+    if a >= 10:
+        return 4
+    return 5
+
+
 def _clean(v: float, digits: int = 5) -> float:
-    """Round, but never let a NaN reach a client dressed up as a number."""
+    """Round a computed value, scaling precision with magnitude.
+
+    A fixed 5 decimals does not remove the float tail from a large number:
+    round(3992.80005, 5) is still 3992.80005, so gold and BTC shipped with
+    tails while EUR/USD looked clean.
+    """
     f = float(v)
-    return round(f, digits) if np.isfinite(f) else float("nan")
+    if not np.isfinite(f):
+        return float("nan")
+    return round(f, min(price_decimals(f), digits))
 
 
 def snapshot(series: Series) -> dict:
@@ -127,7 +152,7 @@ def snapshot(series: Series) -> dict:
         "stoch_d": tail("stoch_d", 2),
         "atr": tail("atr"),
         "atr_pct": _clean(float(a.iloc[-1]) / price * 100, 3) if price else float("nan"),
-        "support": round(support, 5),
-        "resistance": round(resistance, 5),
+        "support": _clean(support),
+        "resistance": _clean(resistance),
         "candles": len(df),
     }
