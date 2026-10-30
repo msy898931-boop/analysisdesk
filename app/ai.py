@@ -334,6 +334,11 @@ async def narrate(symbol: str, interval: str, ind: dict, sig: dict, lang: str = 
             text, why = await _try_model(client, model, messages)
             if not text:
                 reasons.append(why or f"{model}: unknown failure")
+                # A rejected key or an unpermitted model is configuration, not
+                # weather: every other model fails the same way, so stop rather
+                # than spend the rest of the budget proving it.
+                if why and why.startswith("config:"):
+                    break
                 continue
             reject = _verify(text, ind, sig)
             if reject:

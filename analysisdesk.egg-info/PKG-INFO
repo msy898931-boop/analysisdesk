@@ -1,0 +1,344 @@
+Metadata-Version: 2.4
+Name: analysisdesk
+Version: 1.0.0
+Summary: Transparent technical analysis over real market data, with an AI layer that only explains.
+Author: AnalysisDesk
+License: MIT License
+        
+        Copyright (c) 2026 AnalysisDesk
+        
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+        
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+        
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        
+        ---
+        
+        The market data shown by this software is retrieved at runtime from public
+        third-party sources (Yahoo Finance, Kraken, Coinbase, Swissquote). It is not
+        redistributed here, and each source's own terms apply to its use. This software
+        produces automated technical analysis and is not investment advice.
+        
+Project-URL: Homepage, https://github.com/msy898931-boop/analysisdesk
+Keywords: technical-analysis,trading,market-data,fastapi
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: httpx>=0.27
+Requires-Dist: pandas>=2.2
+Requires-Dist: numpy>=1.26
+Requires-Dist: pydantic>=2.7
+Requires-Dist: python-dotenv>=1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: pytest-cov>=5; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.11; extra == "dev"
+Requires-Dist: bandit>=1.7; extra == "dev"
+Requires-Dist: pip-audit>=2.7; extra == "dev"
+Dynamic: license-file
+
+# AnalysisDesk
+
+منصّة تحليل فني للأسواق، مبنية بالكامل حول الذكاء الاصطناعي، وتعمل على **بيانات سوق حقيقية**.
+
+An AI-driven market analysis desk built on **real market data**.
+
+كيف بُني، وليش كل طبقة منفصلة، ووين الحدود — في [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+---
+
+## الفكرة / What it does
+
+تدخل رمز أصل وإطاراً زمنياً، فتحصل على:
+
+- **قراءة اتجاه** (شراء / بيع / محايد) مع درجة توافق المؤشرات
+- **وقف خسارة وهدف** محسوبين من تقلب السوق الفعلي (ATR)، لا من أرقام ثابتة
+- **تفسير بالذكاء الاصطناعي** يشرح القراءة بالعربية أو الإنجليزية
+- **سجل قواعد شفّاف**: كل نقطة في التقييم مسنَدة إلى القاعدة التي أنتجتها
+- **تحذيرات صريحة** حين تكون الصفقة ضعيفة (هدف قريب، مخاطرة/عائد منخفضة)
+
+Supported assets: forex, crypto, commodities, indices and stocks — 10 instruments
+across 5 timeframes (5m → 1wk).
+
+---
+
+## كل رقم يحمل مصدره / Every number carries its source
+
+هذه القاعدة هي سبب وجود حقل `instrument` و`spot` في كل استجابة:
+
+- الذهب متاح **بشكلين** لأن المتداولين لا يتفقون على رقم واحد:
+  - **الذهب (سبوت)** `XAUUSD` — **هذا ما تراه عند وسيطك**. للرسم البياني
+    نستخدم سوق الرمز المغطّى بالذهب (`PAXG/USD`) لأن لا يوجد مصدر شموع
+    مجاني ومباشر لـ XAU/USD. مطابقته للسبوت الحيّ حوالي **0.05%**، وهي
+    معروضة على البطاقة حتى تتحقق بنفسك.
+  - **الذهب الآجل** `GC=F` — عقد COMEX، وسعره يختلف عن السبوت بمقدار
+    **الأساس** (الفائدة + علاوة العقد)، وهو معروض صراحةً.
+- البطاقة تعرض: اسم الأداة الصريح، ونوعها (سبوت/آجل)، ومصدر الشموع،
+  و**سعر السبوت الحيّ** من Swissquote، والفرق بينهما بالنسبة المئوية.
+- إذا تعذّر المصدر الأساسي للشموع، ينتقل النظام إلى البديل تلقائياً؛ وإذا
+  تعذّر الجميع، تُعلَن الحقيقة: "تعذّر قراءة بيانات السوق" — ولا يُعرض رقم بديل.
+
+مصادر الشموع (بلا مفاتيح): **Kraken** أولاً (كل الإطارات مباشرة + ٧ سنوات
+تاريخ)، ثم **Coinbase** (يُجمَّع اليومي إلى أسابيع عند الحاجة). والسبوت الحيّ
+من **Swissquote**، ثم `gold-api`.
+
+---
+
+---
+
+## تشغيله بشكل دائم / Keeping it running
+
+هذه البيئة **ما فيها نظام خدمات**: PID 1 هو الوكيل، `systemd` معطّل، ولا cron
+ولا supervisor. فالحلقة التي تعيد التشغيل موجودة في السكربتات:
+
+| الأمر | الوظيفة |
+|---|---|
+| `scripts/start.sh` | يشغّل الخادم منفصلاً (detached) مع حراسة تعيد تشغيله. آمن للتكرار. |
+| `scripts/status.sh` | يخبرك: الحراسة شغّالة؟ والخدمة تُجيب؟ ومفتاح الذكاء الاصطناعي فعّال؟ |
+| `scripts/stop.sh` | يوقف الحراسة ثم الخادم (بالترتيب، وإلا أعادت الحراسة تشغيله). |
+
+الحراسة تعيد التشغيل عند أي خروج (اختبرتُها بـ`kill -9`). و`flock` يضمن
+**نسخة واحدة فقط** مهما شغّلت `start.sh`.
+
+**الحد الحقيقي:** لو أُعيد تدوير الحاوية نفسها، لا شيء داخل الحاوية ينجو —
+لازم تشغّل `scripts/start.sh` مرة بعد كل إعادة تشغيل للساندبوكس. السكربت
+يركّب المتطلبات الناقصة تلقائياً إن مُسحت، وهذه هي الحالة التي لا تستطيع
+الحلقة الداخلية إصلاحها بنفسها.
+
+المفتاح يُقرأ من `.env` (مستثنى من git، صلاحياته 600). المجلد `web/` فقط
+مكشوف للشبكة، فلا `.env` ولا `.runtime/` يُوصلان من الخارج.
+
+---
+---
+
+## النشر / Deploying
+
+الملفات جاهزة ومُختبرة: `Dockerfile`، `render.yaml`، `.dockerignore`، `.env.example`.
+التطبيق **ما يكتب شي على القرص** (الذاكرة فقط)، فما يحتاج قرصاً دائماً.
+
+**الطريق الأسرع (Render):**
+
+1. أنشئ ريبو فارغ على GitHub باسم `analysisdesk`.
+2. ادفع الكود:
+   ```bash
+   git remote add origin https://github.com/<user>/analysisdesk.git
+   GIT_TERMINAL_PROMPT=0 git push https://${GITHUB_TOKEN}@github.com/<user>/analysisdesk.git master
+   ```
+3. في Render: **New → Blueprint** → اختر الريبو. `render.yaml` يبني الباقي.
+4. أضف `GROQ_API_KEY` في Environment (اختياري: بدونه يرجع للتفسير المحسوب).
+
+**بـDocker محلياً:**
+```bash
+docker build -t analysisdesk .
+docker run -p 8080:8080 -e PORT=8080 -e GROQ_API_KEY=... analysisdesk
+```
+
+**ملاحظة الخطة المجانية:** النوم بعد ~١٥ دقيقة خمول، ويصحو مع أول طلب
+(cold start). لأن ما في حالة على القرص، الصحوة تكلّف **زمن لا صحة**.
+
+---
+## المبدأ الأساسي / The core principle
+
+هذه المنصّة مبنية على عكس ما تفعله المواقع التي تعد بأرباح مضمونة:
+
+1. **لا يوجد أي وعد بالربح.** كلمة "توافق المؤشرات" تعني اتفاق المؤشرات المستقلة،
+   وليست احتمال ربح. لا يظهر أي رقم لا يمكن تتبّعه إلى صيغة.
+2. **المحرّك هو مصدر الحقيقة، والموديل يشرح فقط.** كل مقارنة (مثل `price > EMA20`)
+   تُحسب مسبقاً وتُعطى للموديل كحقيقة جاهزة، فلا يعيد اشتقاقها.
+3. **حارس تحقّق يرفض كلام الموديل** إذا اخترع رقماً، أو وعد بربح، أو عكس علاقة.
+   عند الرفض يعود النظام إلى جملة محسوبة من نفس الحقائق.
+4. **الفشل يُعلَن ولا يُخفى.** إذا تعذّر قراءة السوق، يرجع النظام خطأ صريحاً
+   (`تعذّر قراءة بيانات السوق`) ولا يعرض أي قيمة افتراضية مطمئنة.
+
+---
+
+## التشغيل / Running
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 12000
+```
+
+ثم افتح `http://localhost:12000`.
+
+Groq مفتاح اختياري: إن لم يوجد `GROQ_API_KEY`، تعمل المنصّة كاملة وتبني التفسير
+من المحرّك الحسابي بدلاً من الموديل. وإن انتهت حصة الموديل، تنتقل تلقائياً إلى
+موديل بديل، ثم إلى التفسير المحسوب — مع ذكر السبب في الحقل `note`.
+
+```bash
+export GROQ_API_KEY=...              # اختياري
+export ANALYSIS_MODELS="openai/gpt-oss-120b,qwen/qwen3.8-27b"   # اختياري
+export RATE_LIMIT_PER_MIN=60         # اختياري — طلبات لكل IP بالدقيقة
+export DESK_API_KEY=...              # اختياري — يفرض مفتاحاً على من هو خارج الصفحة
+```
+
+---
+
+## الـ API
+
+| المسار | الوصف |
+|---|---|
+| `GET /` | الواجهة |
+| `GET /api/health` | حالة الخدمة والموديل |
+| `GET /api/symbols` | قائمة الأصول والأطر الزمنية |
+| `GET /api/analyze?symbol=EURUSD=X&interval=1h&lang=ar` | التحليل الكامل |
+| `GET /api/candles?symbol=BTC-USD&interval=1d` | شموع للرسم |
+
+مثال:
+
+```bash
+curl "http://localhost:12000/api/analyze?symbol=GC=F&interval=1h&lang=ar"
+```
+
+### الحماية / Guard
+
+نقاط التحليل بتصرف حصة الموديل، فهي **محدودة لكل IP** (`RATE_LIMIT_PER_MIN`،
+افتراضياً ٦٠ بالدقيقة). وإذا انضبط `DESK_API_KEY`، أي طلب من خارج الصفحة نفسها
+لازم يقدّم المفتاح؛ الصفحة بتُستثنى عبر `Sec-Fetch-Site: same-origin` — هيدر
+المتصفح بيكتبه ولا تقدر صفحة تزوّره. بلا `DESK_API_KEY` الـ API مفتوح لكن
+محدود. الحد لكل عملية على حدة (بالذاكرة)، يعني إعادة التشغيل بتصفّره — هاد
+مذكور صراحةً، مو مخبّى.
+
+---
+
+## الأمان / Security
+
+- **كل نص من السيرفر بينزل للمتصفح عبر `esc()`** في `web/app.js`، والسرد
+  الآلي بينضاف عليه تنظيف markup بالسيرفر (`_strip_markup` في `app/ai.py`).
+- **رؤوس أمان على كل استجابة**: `Content-Security-Policy` (`script-src 'self'`
+  — بيمنع أي سكربت inline)، `X-Content-Type-Options: nosniff`،
+  `X-Frame-Options: DENY`، `Referrer-Policy: no-referrer`.
+- **الحاوية بتشتغل بمستخدم غير root** (`desk`, uid 10001).
+- **`pip-audit` نظيف** و**`bandit` نظيف** (لا نتائج medium/high).
+
+---
+
+## البنية / Layout
+
+```
+app/
+  market.py      بيانات السوق الحقيقية (Yahoo Finance، بلا مفاتيح) + تخزين مؤقت محدود
+  indicators.py  RSI, MACD, EMA, ATR, Bollinger, Stochastic, مستويات الدعم/المقاومة
+  signals.py     محرّك القرار الحتمي + التحذيرات ثنائية اللغة
+  ai.py          طبقة التفسير + حارس التحقّق + الموديلات البديلة
+  main.py        واجهة FastAPI + رؤوس الأمان + حدّ الطلبات
+web/index.html   الواجهة (عربي/إنجليزي، بلا أي اعتماد خارجي)
+web/lib.js       دوال نقية (esc، fmt، priceDecimals) يشترك بها المتصفح واختبارات node
+web/app.js       سكربت الواجهة (module خارجي عمداً — CSP بيمنع inline)
+web/app.test.mjs ٨ اختبارات لواجهة المستخدم عبر `node --test`
+tests/           ١٢٨ اختباراً على المسارات الحقيقية، بلا محاكاة
+scripts/         فحص النشر + التنبيه
+pyproject.toml   مصدر واحد: الاعتماديات + إعدادات ruff/pytest/coverage/mypy
+ARCHITECTURE.md  الطبقات وتدفّق البيانات والحدود الصريحة
+.github/         CI + قالب الـPR + مراقبة النشر
+```
+
+---
+
+## الاختبارات / Tests
+
+```bash
+python -m pytest tests/ -m "not network"   # اللي بيشتغل بالـCI — بلا شبكة
+python -m pytest tests/                    # مع اختبارات الشبكة الحيّة
+```
+
+الاختبارات تعمل على الكود الحقيقي: محرّك الإشارات، رياضيات المؤشرات، وحارس
+التحقّق، وواجهة الـ API مع بيانات سوق حيّة. لا توجد أي mocks.
+
+الاختبارات اللي بتلمس مصادر خارجية معلَّمة بـ`@pytest.mark.network` ومستثناة
+من الـCI: بناء أحمر لازم يعني «إحنا كسرنا شي»، مو «مصدر بطيء».
+
+### الفحوصات / Checks
+
+```bash
+ruff check app/ tests/ scripts/
+mypy app/ --ignore-missing-imports
+bandit -q -r app/ scripts/ -ll
+pip-audit -r requirements.txt
+```
+
+كلها بتشتغل بالـCI على Python 3.11 و3.12 (`.github/workflows/ci.yml`).
+
+---
+
+## حدود صريحة / Honest limits
+
+- التحليل تقني فقط؛ لا يشمل الأخبار أو الأساسيات.
+- المؤشرات متأخرة بطبيعتها؛ هذا تحليل، وليس توقّعاً.
+- البيانات من مصدر مجاني عام، وقد تتأخر أو تنقطع.
+- **هذا تحليل تقني آلي وليس توصية استثمارية، ولا ضماناً لأي نتيجة.**
+
+---
+
+## مراقبة النشر / Watching the deployment
+
+خدمة Render المجانية **بتنام بعد ١٥ دقيقة بلا زوار** وبتصحى لحالها. هاد طبيعي،
+مو عطل. الفحص التالي بيخبرك **إذا الموقع نايم**، **بدون ما يوقّظه**:
+
+```bash
+python3 scripts/check_deploy.py            # تقرير مباشر
+python3 scripts/check_deploy.py --json     # للآلات
+python3 scripts/check_deploy.py --notify   # تنبيه تيليجرام عند مشكلة حقيقية
+```
+
+### ليش `/robots.txt`؟
+
+لأنه **الفحص الوحيد اللي بيشوف بدون ما يتدخّل**. لما الخدمة نايمة، Render
+بتردّ على `/robots.txt` بنفسها (Disallow all) — والرد **ما بيوصل للتطبيق وما
+بيوقّظه**. أي مسار تاني، `/api/health` مثلاً، **بيوقّظ الخدمة**.
+
+> **فحص بجدول كل ٣٠ دقيقة على `/api/health` بيوقّظ الخدمة كل مرة وبياكل الـ٧٥٠
+> ساعة الشهرية. الفحص بيدمّر الشي اللي بيقيسه.**
+
+### الحالات الثلاث
+
+| الحالة | المعنى | تنبيه؟ |
+|---|---|---|
+| `AWAKE` | التطبيق ردّ على `/robots.txt` بـ404 JSON | ✅ إذا `health != ok` |
+| `ASLEEP` | Render ردّت بنفسها — طبيعي بالمجاني | ❌ لا |
+| `UNKNOWN` | الطلب ما خلص أبداً | ⚠️ **نعم** — مو "كل شي تمام" |
+
+**قراءة فاشلة بتقول `UNKNOWN`، وما بتنعرض أبداً كـ"كل شي تمام".**
+
+### فحص استهلاك الساعات
+
+```bash
+python3 scripts/hours_audit.py --log deploy-watch.jsonl
+python3 scripts/hours_audit.py --log deploy-watch.jsonl --services 2
+```
+
+⚠️ **Render ما بتعرض استهلاك الساعات عبر الـAPI** — لا usage ولا billing ولا
+quota. الرقم الموثوق **بس بالـDashboard**. فالسكربت **بيقول هاد صراحةً** وبيقدّم
+**توقّعاً** من قراءاته، مو رقم دقيق مخترع.
+
+**٧٥٠ ساعة لكل مساحة عمل، مو لكل خدمة.** خدمة تانية شغّالة ٢٤/٧ = ٧٢٠ ساعة،
+يعني لحالها بتاكل السقف.
+
+### الأتمتة
+
+`.github/workflows/deploy-watch.yml` بيفحص **كل ٣٠ دقيقة**:
+- **بينبّه** بس عند `UNKNOWN` أو `AWAKE` + غير سليم
+- **ما بينبّه** عند النوم — لأنه طبيعي
+- بلاغ واحد مُعاد استخدامه، **بينغلق تلقائياً** عند التعافي
+- **بيكلّف صفر ساعات** — لأنه ما بيوقّظ الخدمة
+
+لتشغيله يدوي مع اختبار التنبيه: Actions ← deploy-watch ← Run workflow ← ✅ `force_alert`

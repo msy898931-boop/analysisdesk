@@ -6,6 +6,7 @@ fail here, not in front of a user.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 
@@ -1621,3 +1622,342 @@ def test_rate_limit_scope_is_documented_not_hidden():
     flat = " ".join(main_src.replace("#", " ").split())
     assert "per process" in flat
     assert "--workers 1" in flat
+
+
+# ================================ main.py: the endpoints, end to end
+# The API layer is where every layer meets, and it had no integration test: the
+# pieces were tested apart, never wired. These drive real requests through
+# TestClient with the network stubbed at the function boundary (monkeypatch
+# restores it after each test, so no test can leak a stub into another).
+
+
+def _series(symbol="EURUSD=X", n=120, kind="CURRENCY", short="EUR/USD"):
+    from app.market import Candle, Series
+
+    candles = [
+        Candle(1700000000 + i * 3600, 100 + i * 0.1, 100.5 + i * 0.1, 99.5 + i * 0.1, 100 + i * 0.1, None)
+        for i in range(n)
+    ]
+    return Series(
+        symbol=symbol,
+        currency="USD",
+        exchange="CCY",
+        interval="1h",
+        candles=candles,
+        short_name=short,
+        instrument_type=kind,
+    )
+
+
+def _wire(monkeypatch, series, spot=None, spot_error=None):
+    """Stub the market layer and hand back a client with a clean rate budget."""
+    from app import main
+
+    async def fake_fetch(sym, iv, **kw):
+        if isinstance(series, Exception):
+            raise series
+        return series
+
+    async def fake_spot(metal):
+        if spot_error:
+            raise market.MarketDataError(spot_error)
+        return spot or {"metal": metal, "price": 4000.5, "source": "Swissquote"}
+
+    monkeypatch.setattr(main.market, "fetch_series", fake_fetch)
+    monkeypatch.setattr(main.market, "fetch_spot", fake_spot)
+    main._hits.clear()
+    return TestClient(main.app)
+
+
+def test_health_reports_the_model_and_whether_a_key_is_set(monkeypatch):
+    from app import main
+
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    body = TestClient(main.app).get("/api/health").json()
+    assert body["status"] == "ok" and body["model"] and body["model_key"] is True
+
+
+def test_symbols_lists_the_watchlist_and_intervals():
+    from app import main
+
+    body = TestClient(main.app).get("/api/symbols").json()
+    syms = {s["symbol"] for s in body["symbols"]}
+    assert "XAUUSD" in syms and "EURUSD=X" in syms and "GC=F" in syms
+    assert set(body["intervals"]) == {"5m", "15m", "1h", "1d", "1wk"}
+
+
+def test_analyze_returns_the_full_provenance_block(monkeypatch):
+    c = _wire(monkeypatch, _series("EURUSD=X"))
+    body = c.get("/api/analyze?symbol=EURUSD=X&interval=1h&lang=en").json()
+    assert body["symbol"] == "EURUSD=X" and body["interval"] == "1h"
+    assert body["instrument"]["kind"] == "spot"  # CURRENCY is not FUTURE
+    assert body["instrument"]["name"] == "EUR/USD"
+    assert body["indicators"] and body["signal"]
+    assert body["narrative"]["source"] in ("model", "deterministic")
+    assert "not investment advice" in body["disclaimer"].lower()
+
+
+def test_analyze_labels_a_futures_contract_and_attaches_spot(monkeypatch):
+    c = _wire(monkeypatch, _series("GC=F", kind="FUTURE", short="Gold Futures"))
+    body = c.get("/api/analyze?symbol=GC=F&interval=1h").json()
+    assert body["instrument"]["kind"] == "futures"
+    assert body["spot"] and body["spot"]["metal"] == "XAU"
+
+
+def test_analyze_says_spot_failed_instead_of_hiding_it(monkeypatch):
+    """A missing second opinion is reported, never substituted."""
+    c = _wire(monkeypatch, _series("GC=F", kind="FUTURE"), spot_error="upstream 503")
+    body = c.get("/api/analyze?symbol=GC=F&interval=1h").json()
+    assert body["spot"]["error"] and "price" not in body["spot"]
+
+
+def test_analyze_rejects_an_unknown_interval(monkeypatch):
+    c = _wire(monkeypatch, _series())
+    r = c.get("/api/analyze?symbol=EURUSD=X&interval=7s")
+    assert r.status_code == 400 and "unsupported interval" in r.json()["detail"]
+
+
+def test_analyze_rejects_an_unknown_language(monkeypatch):
+    c = _wire(monkeypatch, _series())
+    r = c.get("/api/analyze?symbol=EURUSD=X&interval=1h&lang=fr")
+    assert r.status_code == 400 and "ar or en" in r.json()["detail"]
+
+
+def test_a_bad_parameter_does_not_spend_the_rate_budget(monkeypatch):
+    """A typo must not lock a user out; the guard runs after validation."""
+    from app import main
+
+    c = _wire(monkeypatch, _series())
+    for _ in range(main.RATE_LIMIT + 5):
+        assert c.get("/api/analyze?symbol=EURUSD=X&interval=nope").status_code == 400
+    # The budget is untouched, so a real request still goes through.
+    assert c.get("/api/analyze?symbol=EURUSD=X&interval=1h").status_code == 200
+
+
+def test_a_failed_market_read_is_a_502_not_a_blank_answer(monkeypatch):
+    c = _wire(monkeypatch, market.MarketDataError("Yahoo returned 503"))
+    r = c.get("/api/analyze?symbol=EURUSD=X&interval=1h")
+    assert r.status_code == 502 and "503" in r.json()["detail"]
+
+
+def test_candles_returns_the_tail_of_the_series(monkeypatch):
+    c = _wire(monkeypatch, _series(n=250))
+    body = c.get("/api/candles?symbol=EURUSD=X&interval=1h").json()
+    assert len(body["candles"]) == 200  # capped at the last 200
+    assert set(body["candles"][0]) == {"t", "o", "h", "l", "c"}
+
+
+def test_candles_rejects_an_unknown_interval(monkeypatch):
+    c = _wire(monkeypatch, _series())
+    assert c.get("/api/candles?symbol=EURUSD=X&interval=3m").status_code == 400
+
+
+def test_the_page_is_served_with_a_csp_header():
+    from app import main
+
+    r = TestClient(main.app).get("/")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+
+
+def test_the_rate_limit_returns_429_with_a_retry_after(monkeypatch):
+    from app import main
+
+    c = _wire(monkeypatch, _series())
+    monkeypatch.setattr(main, "RATE_LIMIT", 2)
+    assert c.get("/api/analyze?symbol=EURUSD=X&interval=1h").status_code == 200
+    assert c.get("/api/analyze?symbol=EURUSD=X&interval=1h").status_code == 200
+    r = c.get("/api/analyze?symbol=EURUSD=X&interval=1h")
+    assert r.status_code == 429 and r.headers.get("retry-after") == "60"
+
+
+def test_the_api_key_gate_admits_the_page_and_turns_away_a_direct_call(monkeypatch):
+    """The bundled page is trusted by a header a page cannot forge."""
+    from app import main
+
+    c = _wire(monkeypatch, _series())
+    monkeypatch.setattr(main, "API_KEY", "secret")
+    direct = c.get("/api/analyze?symbol=EURUSD=X&interval=1h")
+    assert direct.status_code == 401
+    page = c.get("/api/analyze?symbol=EURUSD=X&interval=1h", headers={"sec-fetch-site": "same-origin"})
+    assert page.status_code == 200
+    keyed = c.get("/api/analyze?symbol=EURUSD=X&interval=1h", headers={"x-api-key": "secret"})
+    assert keyed.status_code == 200
+
+
+# ================================= ai.py: the model fallback chain
+# The chain is the difference between "the desk is blind when one quota runs
+# out" and "it degrades gracefully". It was never exercised: the tests covered
+# the guard and the offline sentence, but not the walk from model to model.
+
+
+class _GroqResponse:
+    def __init__(self, status, payload=None, text=""):
+        self.status_code = status
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _GroqClient:
+    """A stand-in for httpx.AsyncClient: a queue of canned Groq replies."""
+
+    def __init__(self, *responses, calls=None):
+        self._responses = list(responses)
+        self.calls = calls if calls is not None else []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, headers=None, content=None):
+        self.calls.append(json.loads(content))
+        r = self._responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def _groq_ok(text):
+    return _GroqResponse(200, {"choices": [{"message": {"content": text}}]})
+
+
+def _ai_board(price=100.0):
+    """A rising series, so the last close sits ABOVE its EMA20 (a fact the
+    contradiction test needs to be able to lie about)."""
+    from app.indicators import snapshot
+    from app.market import Candle, Series
+
+    candles = [
+        Candle(1700000000 + i * 3600, 80 + i * 0.2, 80.2 + i * 0.2, 79.8 + i * 0.2, 80 + i * 0.2, None)
+        for i in range(220)
+    ]
+    return snapshot(Series(symbol="X", currency="USD", exchange="E", interval="1h", candles=candles))
+
+
+def _ai_sig(board):
+    from app.signals import evaluate, signal_dict
+
+    return signal_dict(evaluate(board))
+
+
+def _narrate_with(monkeypatch, client, lang="en"):
+    from app import ai
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setattr(ai.httpx, "AsyncClient", lambda **k: client)
+    b = _ai_board()
+    return asyncio.run(ai.narrate("EURUSD=X", "1h", b, _ai_sig(b), lang))
+
+
+def test_narrate_uses_the_first_model_when_it_answers(monkeypatch):
+    from app import ai
+
+    text = f"Price is {_n_board_price()} and the read is long."
+    out = _narrate_with(monkeypatch, _GroqClient(_groq_ok(text)))
+    assert out["source"] == "model" and out["model"] == ai.MODELS[0]
+    assert out["note"] is None
+
+
+def _n_board_price():
+    from app import ai
+
+    return ai._n(_ai_board()["price"])
+
+
+def test_narrate_walks_to_the_second_model_when_the_first_is_rate_limited(monkeypatch):
+    from app import ai
+
+    text = f"Price is {_n_board_price()}."
+    client = _GroqClient(_GroqResponse(429, {"error": {"message": "rate limited"}}), _groq_ok(text))
+    out = _narrate_with(monkeypatch, client)
+    assert out["source"] == "model" and out["model"] == ai.MODELS[1]
+    assert len(client.calls) == 2
+
+
+def test_narrate_retries_without_reasoning_effort_on_a_400(monkeypatch):
+    """Not every model accepts reasoning_effort; a 400 must retry, not give up."""
+    client = _GroqClient(_GroqResponse(400, {}), _groq_ok(f"Price is {_n_board_price()}."))
+    out = _narrate_with(monkeypatch, client)
+    assert out["source"] == "model"
+    assert "reasoning_effort" in client.calls[0]
+    assert "reasoning_effort" not in client.calls[1]
+
+
+def test_narrate_gives_up_immediately_on_a_rejected_key(monkeypatch):
+    """A 401 is config, not weather: retrying the other models wastes the budget."""
+    from app import ai
+
+    client = _GroqClient(_GroqResponse(401, {}))
+    out = _narrate_with(monkeypatch, client)
+    assert out["source"] == "deterministic" and out["model"] is None
+    assert len(client.calls) == 1  # did not try the rest
+    assert ai.MODELS[0] not in out["text"]  # no model is credited
+    assert "key" in out["note"].lower()
+
+
+def test_narrate_falls_back_when_every_model_contradicts_the_facts(monkeypatch):
+    from app import ai
+
+    lie = "Price is below EMA20 here."  # the board says above
+    out = _narrate_with(monkeypatch, _GroqClient(*[_groq_ok(lie) for _ in ai.MODELS]))
+    assert out["source"] == "deterministic" and out["model"] is None
+    assert "rejected" in out["note"]
+
+
+def test_narrate_reports_a_network_error_per_model(monkeypatch):
+    from app import ai
+
+    errs = [ai.httpx.ConnectError("down") for _ in ai.MODELS]
+    out = _narrate_with(monkeypatch, _GroqClient(*errs))
+    assert out["source"] == "deterministic"
+    assert "network error" in out["note"]
+
+
+def test_narrate_reports_an_empty_completion_honestly(monkeypatch):
+    """A model that spends its whole budget on hidden reasoning returns nothing."""
+    from app import ai
+
+    empty = [_GroqResponse(200, {"choices": [{"message": {"content": ""}}]}) for _ in ai.MODELS]
+    out = _narrate_with(monkeypatch, _GroqClient(*empty))
+    assert out["source"] == "deterministic"
+    assert "hidden reasoning" in out["note"]
+
+
+def test_narrate_strips_markup_from_a_verified_answer(monkeypatch):
+    price = _n_board_price()
+    text = f"<script>alert(1)</script> Price is {price} and the read is long."
+    out = _narrate_with(monkeypatch, _GroqClient(_groq_ok(text)))
+    assert out["source"] == "model"
+    assert "<script>" not in out["text"] and "</script>" not in out["text"]
+
+
+def test_narrate_without_a_key_never_calls_the_provider(monkeypatch):
+    from app import ai
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    called = []
+
+    def boom(**k):
+        called.append(1)
+        raise AssertionError("the provider must not be contacted without a key")
+
+    monkeypatch.setattr(ai.httpx, "AsyncClient", boom)
+    b = _ai_board()
+    out = asyncio.run(ai.narrate("EURUSD=X", "1h", b, _ai_sig(b), "en"))
+    assert out["source"] == "deterministic" and not called
+
+
+def test_narrate_returns_prose_in_the_requested_language(monkeypatch):
+    from app import ai
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    b = _ai_board()
+    ar = asyncio.run(ai.narrate("EURUSD=X", "1h", b, _ai_sig(b), "ar"))
+    assert any("\u0600" <= ch <= "\u06ff" for ch in ar["text"])  # has Arabic
