@@ -3108,8 +3108,10 @@ def test_alert_endpoints_arm_list_and_remove(tmp_path, monkeypatch):
     # Another chat sees nothing.
     assert c.get("/api/alerts?chat_id=u2", headers=h).json()["alerts"] == []
     # Removing with the wrong chat id fails; the right one works.
-    assert c.delete(f"/api/alerts/{aid}?chat_id=u2", headers=h).status_code == 404
-    assert c.delete(f"/api/alerts/{aid}?chat_id=u1", headers=h).status_code == 200
+    wrong_chat = c.delete(f"/api/alerts/{aid}?chat_id=u2", headers=h)
+    assert wrong_chat.status_code == 404
+    right_chat = c.delete(f"/api/alerts/{aid}?chat_id=u1", headers=h)
+    assert right_chat.status_code == 200
     assert c.get("/api/alerts?chat_id=u1", headers=h).json()["alerts"] == []
 
 
@@ -3126,9 +3128,12 @@ def test_alert_endpoint_validates_input(tmp_path, monkeypatch):
     c = TestClient(m.app)
     h = {"x-alerts-token": "svc-secret"}
     base = "/api/alerts?chat_id=u&symbol=XAUUSD&price=4000"
-    assert c.post(base + "&interval=99", headers=h).status_code == 400
-    assert c.post(base + "&direction=SIDEWAYS", headers=h).status_code == 400
-    assert c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=-5", headers=h).status_code == 400
+    bad_interval = c.post(base + "&interval=99", headers=h)
+    assert bad_interval.status_code == 400
+    bad_direction = c.post(base + "&direction=SIDEWAYS", headers=h)
+    assert bad_direction.status_code == 400
+    bad_price = c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=-5", headers=h)
+    assert bad_price.status_code == 400
 
 
 def test_alert_endpoint_reports_503_when_store_is_down(monkeypatch):
@@ -3183,8 +3188,10 @@ def test_alerts_are_closed_when_no_token_is_configured(tmp_path, monkeypatch):
     m = _reloaded_app(monkeypatch, tmp_path, configured=None)
     c = TestClient(m.app)
     assert c.get("/api/alerts?chat_id=u1").status_code == 503
-    assert c.post("/api/alerts?chat_id=u1&symbol=XAUUSD&price=4000&direction=BUY").status_code == 503
-    assert c.delete("/api/alerts/1?chat_id=u1").status_code == 503
+    armed = c.post("/api/alerts?chat_id=u1&symbol=XAUUSD&price=4000&direction=BUY")
+    assert armed.status_code == 503
+    removed = c.delete("/api/alerts/1?chat_id=u1")
+    assert removed.status_code == 503
 
 
 def test_alerts_reject_a_missing_or_wrong_token(tmp_path, monkeypatch):
