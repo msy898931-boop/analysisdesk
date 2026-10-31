@@ -46,7 +46,11 @@ of them is missing should say which and where.
   fails the build if it does.
 - **Hash-pinned dependencies.** The image installs `requirements.lock` with
   `--require-hashes`, so a moved transitive dependency fails the build.
-- **Rate limiting and an optional API key** on the analysis endpoints.
+- **Rate limiting and an optional API key** on the analysis endpoints. When
+  `DESK_API_KEY` is set it is required from *every* caller. There is no
+  same-origin exemption: a page-script check such as `Sec-Fetch-Site` is set by
+  the browser but is equally settable by any script, so trusting it was a bypass
+  rather than a credential. The gate fails closed.
 - **Error handling that does not leak.** Unhandled exceptions are logged
   server-side with secrets redacted and answered to the caller as a bare
   `internal error` with a request id.

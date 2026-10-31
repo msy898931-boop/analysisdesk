@@ -18,6 +18,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import hmac
 import itertools
 import os
 import time
@@ -153,7 +154,10 @@ async def unhandled(request: Request, exc: Exception) -> JSONResponse:
 # counter the instance counter -- one worker, one limit. It still stops casual
 # scraping and runaway loops, which is what actually threatens the quota.
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
-# Optional. When set, a caller that is not the bundled page must present it.
+# Optional. When set, every caller must present it -- the bundled page included.
+# It used to exempt the page via `Sec-Fetch-Site: same-origin`, which a browser
+# sets and page script cannot; but a *script* sets it freely, so the header was a
+# bypass, not a credential. See guard() below.
 API_KEY = os.getenv("DESK_API_KEY", "").strip()
 
 _hits: dict[str, deque[float]] = defaultdict(deque)
@@ -202,14 +206,18 @@ def _within_rate(ip: str) -> bool:
 
 
 async def guard(request: Request) -> None:
-    """Gate the data endpoints: optional key, then a per-IP rate limit."""
-    if API_KEY and request.headers.get("x-api-key") != API_KEY:
-        # The bundled page cannot carry the key without exposing it, so it is
-        # trusted by a header a page's own script cannot forge: the browser sets
-        # Sec-Fetch-Site and it is a forbidden header name. A direct API call
-        # sends nothing, and is turned away.
-        if request.headers.get("sec-fetch-site") != "same-origin":
-            raise HTTPException(401, "missing or invalid API key")
+    """Gate the data endpoints: optional key, then a per-IP rate limit.
+
+    The key, when set, is required from *every* caller. It used to exempt any
+    request carrying `Sec-Fetch-Site: same-origin`, on the theory that only the
+    bundled page sends it. True of a browser, false of a script: the header is
+    set by the client, so `curl -H 'Sec-Fetch-Site: same-origin'` walked past
+    the key. A header the caller controls is not a credential. No exemption is
+    offered now -- the gate fails closed, because the only alternative is a
+    bypass dressed as a policy.
+    """
+    if API_KEY and not hmac.compare_digest(request.headers.get("x-api-key", ""), API_KEY):
+        raise HTTPException(401, "missing or invalid API key")
     if not _within_rate(_client_ip(request)):
         raise HTTPException(429, "too many requests; try again shortly",
                             headers={"Retry-After": "60"})

@@ -24,7 +24,8 @@ services:
       # variable so it can be raised without a rebuild if real use needs it.
       - key: RATE_LIMIT_PER_MIN
         value: "60"
-      # Optional. Leave unset and the API is open (rate-limited only). Set it to
-      # require a key from callers that are not the bundled page.
+      # Optional. When set, every caller must present it -- there is no page
+      # exemption (a public page cannot hold a secret). Leave unset and the API
+      # is open but rate-limited, which is what production does.
       - key: DESK_API_KEY
         sync: false
