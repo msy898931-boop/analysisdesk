@@ -461,3 +461,12 @@ app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 async def index():
     store.bump("visits")
     return FileResponse(str(WEB / "index.html"))
+
+
+@app.get("/pitch")
+async def pitch():
+    # The project pitch is a static file in web/, so it ships in the image and is
+    # served from the same origin as the desk. It carries no script -- the
+    # language switch is pure CSS -- so it lives inside script-src 'self' without
+    # a policy carve-out, the same rule the desk page follows.
+    return FileResponse(str(WEB / "pitch.html"))

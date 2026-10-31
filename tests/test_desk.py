@@ -961,6 +961,29 @@ def test_page_has_no_inline_handlers():
     assert 'src="/static/app.js"' in html
 
 
+def test_pitch_is_served_and_carries_no_script():
+    """The pitch lives on the same origin and the same CSP as the desk.
+
+    It switches language with CSS only, so it must contain no script at all --
+    not an inline handler, not a <script> tag. If it ever needs one, it needs a
+    carve-out in script-src, and this test is where that decision has to be
+    faced rather than discovered in a browser.
+    """
+    from pathlib import Path
+
+    r = client.get("/pitch")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    # Same hardening as the desk, from the same middleware.
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+
+    html = (Path(__file__).resolve().parent.parent / "web" / "pitch.html").read_text("utf-8")
+    assert "<script" not in html.lower()
+    assert "onclick=" not in html and "onchange=" not in html
+    # Both languages ship in the one file, gated by CSS, so it works with JS off.
+    assert 'id="lang-ar"' in html and 'id="lang-en"' in html
+
+
 # ------------------------------------------------------------- abuse guard
 
 def test_rate_limit_blocks_the_nth_plus_one_request(monkeypatch):

@@ -5,7 +5,8 @@
 An AI-driven market analysis desk built on **real market data**.
 
 كيف بُني، وليش كل طبقة منفصلة، ووين الحدود — في [`ARCHITECTURE.md`](ARCHITECTURE.md).
-وعرض المشروع (عربي/إنجليزي، ملف واحد بلا اعتماديات) في [`pitch.html`](pitch.html).
+وعرض المشروع (عربي/إنجليزي، ملف واحد بلا اعتماديات) في [`web/pitch.html`](web/pitch.html)،
+ويُخدَم من الخدمة الحيّة على `/pitch`.
 
 ---
 
@@ -208,6 +209,7 @@ app/
   alerts.py      كشف عبور المستوى + إرسال تيليجرام (مطفأ افتراضياً)
   main.py        واجهة FastAPI + رؤوس الأمان + حدّ الطلبات
 web/index.html   الواجهة (عربي/إنجليزي، بلا أي اعتماد خارجي)
+web/pitch.html   عرض المشروع (عربي/إنجليزي، بلا سكربت — التبديل بـCSS) يُخدَم على /pitch
 web/lib.js       دوال نقية (esc، fmt، priceDecimals) يشترك بها المتصفح واختبارات node
 web/app.js       سكربت الواجهة (module خارجي عمداً — CSP بيمنع inline)
 web/app.test.mjs ٨ اختبارات للدوال النقية عبر `node --test`
