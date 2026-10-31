@@ -1329,8 +1329,6 @@ def test_the_market_layer_refuses_a_path_walking_symbol_before_building_a_url(mo
     other callers (alerts.py, the scripts). The refusal now lives here, before a
     request is built, so no caller can route a `..` into the upstream path.
     """
-    import asyncio
-
     fake = _Client()
     monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
     for bad in ("../../etc/passwd", "a/../b", "..", ".", "a..b", "a/b", "has space", "x" * 21, "sym;drop"):
@@ -1344,8 +1342,6 @@ def test_the_market_layer_refuses_a_path_walking_symbol_before_building_a_url(mo
 
 def test_a_real_symbol_is_percent_encoded_into_the_path(monkeypatch):
     """A valid symbol keeps working, and its punctuation is encoded, not raw."""
-    import asyncio
-
     fake = _Client(_Resp(200, _yahoo_payload(120)))
     monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
     market._cache.clear()

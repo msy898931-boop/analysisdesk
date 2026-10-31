@@ -11,7 +11,7 @@ import datetime
 import re
 import time
 from dataclasses import dataclass, replace
-from urllib.parse import quote as _urlquote
+from urllib.parse import quote
 
 import httpx
 import pandas as pd
@@ -114,10 +114,12 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
     if interval not in INTERVALS:
         raise MarketDataError(f"unsupported interval: {interval}")
 
-    # Validate before the cache lookup: an invalid symbol must never be treated
-    # as a cache key or reach the URL builder. This is the boundary that keeps a
-    # caller other than the API (a script, alerts.py) safe too.
-    if not valid_symbol(symbol):
+    # The guard is inline and positive-branch so static analysis sees it: CodeQL
+    # only recognises a regex barrier when the match sits in the control flow
+    # that guards the sink, not behind a helper call. `valid_symbol` (used by the
+    # API for its early 400) and this line share the one `SYMBOL_RE`, so there is
+    # still a single pattern -- just checked where the taint flow can see it.
+    if not SYMBOL_RE.match(symbol):
         raise MarketDataError(f"unsupported symbol: {symbol!r}")
 
     # The cache wraps both venues. It used to sit below the spot branch, so spot
@@ -139,7 +141,7 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
     # Percent-encode the segment. The validator already confines it to safe
     # characters, but encoding means the URL cannot be changed by a future
     # widening of the pattern without this call being revisited.
-    url = YAHOO.format(symbol=_urlquote(symbol, safe=""))
+    url = YAHOO.format(symbol=quote(symbol, safe=""))
     params = {"range": rng, "interval": interval, "includePrePost": "false"}
 
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": UA}) as client:
@@ -158,9 +160,9 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
 
     meta = result.get("meta", {})
     stamps = result.get("timestamp") or []
-    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
-    opens, highs, lows, closes = (quote.get(k) or [] for k in ("open", "high", "low", "close"))
-    vols = quote.get("volume") or [None] * len(stamps)
+    quote_block = (result.get("indicators", {}).get("quote") or [{}])[0]
+    opens, highs, lows, closes = (quote_block.get(k) or [] for k in ("open", "high", "low", "close"))
+    vols = quote_block.get("volume") or [None] * len(stamps)
 
     candles: list[Candle] = []
     for i, ts in enumerate(stamps):
