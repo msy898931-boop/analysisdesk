@@ -1081,12 +1081,14 @@ def test_negative_price_is_not_traded():
 
 # ------------------------------------------- forwarded-IP must not be forgeable
 
-def test_client_ip_uses_the_hop_our_edge_wrote_not_the_callers():
-    """A caller-controlled X-Forwarded-For must not choose its own bucket.
+def test_client_ip_ignores_forwarded_header_unless_a_proxy_is_trusted(monkeypatch):
+    """X-Forwarded-For is caller-controlled, so it is an identity only behind a
+    proxy we trust -- and the default does not trust one.
 
-    Reading the FIRST entry let a script send a new value per request and step
-    around the limit entirely. The last hop is the one our own proxy appended,
-    so it is the one the caller cannot forge.
+    Reading it blindly (even the last hop) let a script send a fresh value per
+    request and step around the limit; the header is right *behind a proxy*
+    because each proxy appends the address it saw, and wrong with nothing in
+    front, which is the default case.
     """
     from types import SimpleNamespace
 
@@ -1094,25 +1096,31 @@ def test_client_ip_uses_the_hop_our_edge_wrote_not_the_callers():
         headers={"x-forwarded-for": "9.9.9.9, 203.0.113.7"},
         client=SimpleNamespace(host="10.0.0.1"),
     )
+    # Default: untrusted. The header is ignored; the socket peer wins.
+    monkeypatch.setattr(main, "TRUST_PROXY", False)
+    assert main._client_ip(spoofed) == "10.0.0.1"
+    # Behind a proxy we trust: the last hop is the one our edge appended.
+    monkeypatch.setattr(main, "TRUST_PROXY", True)
     assert main._client_ip(spoofed) == "203.0.113.7"
-
-    # No forwarded header at all: fall back to the socket peer.
+    # No forwarded header at all: the socket peer either way.
     direct = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.2"))
     assert main._client_ip(direct) == "10.0.0.2"
 
 
 def test_forged_forwarded_ip_cannot_multiply_the_budget(monkeypatch):
-    """One real client varying the first XFF entry still exhausts one budget."""
+    """One real client varying the forwarded header still exhausts one budget."""
     from types import SimpleNamespace
 
+    monkeypatch.setattr(main, "TRUST_PROXY", False)
     monkeypatch.setattr(main, "RATE_LIMIT", 2)
     main._hits.clear()
     for fake in ("1.1.1.1", "2.2.2.2", "3.3.3.3"):
         req = SimpleNamespace(headers={"x-forwarded-for": f"{fake}, 203.0.113.7"},
                               client=SimpleNamespace(host="10.0.0.1"))
         main._within_rate(main._client_ip(req))
-    # Three requests from one edge hop: the third is refused despite the forgery.
-    assert main._within_rate("203.0.113.7") is False
+    # Every forgery resolved to the same socket peer, so the third was refused.
+    plain = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.1"))
+    assert main._within_rate(main._client_ip(plain)) is False
 
 
 def test_rate_limit_buckets_are_pruned_so_the_map_cannot_grow_forever():

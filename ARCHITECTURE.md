@@ -236,6 +236,11 @@ Stated here rather than left for a reader to discover:
   replicas.** It stops casual scraping and runaway loops, which is what
   threatens the quota. A shared counter (Redis) is the fix if the deployment
   ever scales past one instance.
+- **The rate-limit identity is the socket peer by default.** `X-Forwarded-For`
+  is caller-controlled, so it is read only when `DESK_TRUST_PROXY` is set — which
+  the Render blueprint does, since Render's router appends the real client as the
+  last hop. Off, a forged header cannot mint a fresh bucket. `--no-proxy-headers`
+  keeps uvicorn from rewriting the peer from that same header.
 - **Spot gold is charted from a gold-backed token** (PAXG/USD), not a broker's
   XAU/USD feed, because no keyless spot-gold candle source exists. The token
   trades at a small premium (~0.2%), so the candles are **rescaled onto the live

@@ -128,8 +128,12 @@ docker run -p 8080:8080 -e PORT=8080 -e GROQ_API_KEY=... analysisdesk
 
 ```bash
 pip install -r requirements.lock      # the pinned, hashed set the image uses
-uvicorn app.main:app --host 0.0.0.0 --port 12000
+uvicorn app.main:app --host 0.0.0.0 --port 12000 --no-proxy-headers
 ```
+
+`--no-proxy-headers` keeps uvicorn from rewriting the client address out of
+`X-Forwarded-For`; the app decides for itself whether to read that header, via
+`DESK_TRUST_PROXY` (off unless a proxy you control is in front).
 
 `requirements.txt` declares the ranges; `requirements.lock` is the resolved,
 hash-pinned form of them and is what the Docker image installs. `python
@@ -145,6 +149,7 @@ Groq مفتاح اختياري: إن لم يوجد `GROQ_API_KEY`، تعمل ا�
 export GROQ_API_KEY=...              # اختياري
 export ANALYSIS_MODELS="openai/gpt-oss-120b,qwen/qwen3.8-27b"   # اختياري
 export RATE_LIMIT_PER_MIN=60         # اختياري — طلبات لكل IP بالدقيقة
+export DESK_TRUST_PROXY=1            # بس إذا في proxy بتحكمو بيضيف آخر hop
 export DESK_API_KEY=...              # اختياري — مفتاح إلزامي على كل طلب
 ```
 
@@ -175,7 +180,11 @@ curl "http://localhost:12000/api/analyze?symbol=GC=F&interval=1h&lang=ar"
 ### الحماية / Guard
 
 نقاط التحليل بتصرف حصة الموديل، فهي **محدودة لكل IP** (`RATE_LIMIT_PER_MIN`،
-افتراضياً ٦٠ بالدقيقة). وإذا انضبط `DESK_API_KEY`، **كل** طلب لازم يقدّمه —
+افتراضياً ٦٠ بالدقيقة). وهوية العميل للحد هي **عنوان الـsocket**، مو هيدر: هيدر
+`X-Forwarded-For` بيكتبه العميل، فبينقرأ **بس** لما ينضبط `DESK_TRUST_PROXY` —
+وهاد بيضبطه blueprint تبع Render، لأن راوتر Render فعلاً بيضيف العميل الحقيقي
+كآخر hop. بلاها، هيدر مزوّر ما بيقدر يخترع هوية جديدة كل طلب. وإذا انضبط
+`DESK_API_KEY`، **كل** طلب لازم يقدّمه —
 الصفحة المرفقة كمان، لأن الصفحة العامة ما بتقدر تحمل سرّاً بلا ما يصير علنياً.
 كان في استثناء للصفحة عبر `Sec-Fetch-Site: same-origin`، بس المتصفح بيكتبه
 والسكربت كمان بيكتبه، فكان **تجاوزاً مو مصادقة**؛ انشال والبوابة صارت

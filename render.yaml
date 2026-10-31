@@ -24,6 +24,13 @@ services:
       # variable so it can be raised without a rebuild if real use needs it.
       - key: RATE_LIMIT_PER_MIN
         value: "60"
+      # Render's router appends the real client as the last X-Forwarded-For hop,
+      # so behind it the header IS an identity. Without this the app ignores the
+      # header and rate-limits by socket peer, which on Render is the router --
+      # one shared bucket for everyone. Set only because a proxy we control is
+      # genuinely in front.
+      - key: DESK_TRUST_PROXY
+        value: "1"
       # Optional. When set, every caller must present it -- there is no page
       # exemption (a public page cannot hold a secret). Leave unset and the API
       # is open but rate-limited, which is what production does.

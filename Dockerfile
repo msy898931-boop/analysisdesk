@@ -54,4 +54,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # upstreams, not on CPU), so a single worker is not a throughput problem; if
 # that ever changes, move the counter to a shared store (Redis) before raising
 # this, not after.
-CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
+#
+# --no-proxy-headers is deliberate too. Uvicorn otherwise rewrites the client
+# address from X-Forwarded-For whenever the peer is a trusted proxy, so the
+# socket peer we fall back to would itself be a header the caller set. With it
+# off, the peer is the real peer and the app decides for itself whether to read
+# the header (DESK_TRUST_PROXY), in one place instead of two.
+CMD ["sh", "-c", "python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --no-proxy-headers"]
