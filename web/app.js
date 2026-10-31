@@ -288,7 +288,7 @@ async function drawChart(){
   const cv=document.getElementById("cv"); if(!cv) return;
   let data;
   try{
-    const r=await fetch(`/api/candles?symbol=${encodeURIComponent(last.symbol)}&interval=${last.interval}`);
+    const r=await fetch(`/api/candles?symbol=${encodeURIComponent(last.symbol)}&interval=${last.interval}&lang=${LANG}`);
     if(!r.ok) return;                       // chart is a nicety; the read is not
     data=(await r.json()).candles;
   }catch(e){ return; }

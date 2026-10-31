@@ -1,11 +1,68 @@
 # Changelog
 
-Notable changes, newest first. The project is pre-1.0, so the format is kept
-plain: what changed, and why it mattered.
+Notable changes, newest first. Versions are semantic; the current one is the
+`version` in `pyproject.toml`, which is also what `/api/status` reports.
 
-## Unreleased
+## 1.1.0
 
-### Added
+The hardening pass at the top is the newest work; the feature work below it
+landed earlier in the same release. One theme runs through the top: a claim the
+code makes should be a claim the code can back.
+
+### Fixed — hardening
+
+- **The interactive API docs served an empty shell.** `/docs` and `/redoc`
+  answered 200 while loading their JavaScript from a CDN that our own
+  `script-src 'self'` policy blocks — an all-clear over a page that never
+  worked. They are no longer served. `/openapi.json` is kept: it is plain JSON,
+  no CDN, and now describes the real shape (below).
+- **The version had two homes.** It was typed in `app/main.py` and in
+  `pyproject.toml`, so `/api/status` could disagree with the package with
+  nothing to catch it. It is read from the one file now, with a fallback that
+  reads the same `pyproject.toml` when the package is not installed (the
+  container copies code without building a wheel — that is where the deployed
+  image was reporting `0.0.0+unknown`).
+- **Error strings ignored the language they were asked for.** A read failure
+  came back in one language regardless of `lang`. There is one translation
+  helper now, applied to every error the API returns.
+- **An unvalidated symbol reached the upstream URL.** `_valid_symbol` rejects
+  anything that is not a Yahoo-shaped symbol before any fetch, so a space or a
+  `..` cannot cost a wasted call or come back echoed in a message.
+- **The MIT LICENSE was not detected by GitHub.** It carried a market-data
+  disclaimer that made it "Other". The license is now standard MIT and the
+  disclaimer moved to `NOTICE`, where it belongs.
+- **The base image was pinned by tag only.** `python:3.12-slim` is a moving
+  target, so a rebuild months from now pulled different bytes than CI tested.
+  The `FROM` is pinned by multi-arch digest; the image is rebuilt and proven to
+  answer as a non-root user.
+
+### Added — hardening
+
+- **A typed API contract.** Every data endpoint names a `response_model`
+  (`app/schemas.py`), so `/openapi.json` describes the real fields and a renamed
+  or dropped field fails a test instead of shipping to a client. The absent
+  field is preserved: a failed spot quote omits `price`, it does not send
+  `price: null` — "unknown" is not silently turned into a value.
+- **CodeQL and secret scanning** (`.github/workflows/security.yml`), the first
+  on every push and PR, the second over full history so a removed secret is
+  still caught.
+- **A favicon and Open Graph metadata**, so the shared link is not a blank card.
+- **`SECURITY.md`** (disclosure policy) and a **`Makefile`** whose `make check`
+  runs exactly what CI runs.
+- **`NOTICE`** for the market-data disclaimer, split out of the license.
+
+### Changed — hardening
+
+- **Alerts are documented as off in production, because they are.** The API can
+  arm them and `scripts/run_alerts.py` runs one pass, but no scheduler calls it
+  on the free plan: no cron jobs, separate containers, ephemeral store. That is
+  now stated in README and ARCHITECTURE rather than left to be discovered.
+- **The test client's deprecation warning is gone.** Starlette 1.x prefers
+  `httpx2` and falls back to `httpx` with a warning; `httpx2` is a dev
+  dependency now, so the warning cannot become noise that hides the next real
+  one. The runtime still imports `httpx`.
+
+### Added — feature work
 
 - **A backtest, so the desk's edge can be measured instead of asserted.**
   `GET /api/backtest` walks the signal engine forward over the real candles —

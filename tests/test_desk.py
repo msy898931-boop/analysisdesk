@@ -3328,3 +3328,240 @@ def test_alert_prices_for_skips_a_symbol_it_cannot_read(monkeypatch):
     got = asyncio.run(alerts._prices_for({"BAD", "OK"}, "1h"))
     assert "BAD" not in got  # unknown skipped, not guessed
     assert got["OK"] == (100.0, 101.0)
+
+
+# ============================ surface hardening (docs, version, symbols, i18n)
+# Each of these pins a defect that shipped: an interactive API page that could
+# not run, a version with two homes, an unvalidated symbol, and an error string
+# that ignored the language it was asked for.
+
+def test_interactive_api_docs_are_not_served():
+    """Swagger/ReDoc loaded their JS from a CDN, which our own CSP blocks.
+
+    So they answered 200 as an empty shell -- an all-clear over a page that never
+    worked. The fix is to not serve a surface that cannot run. The machine-
+    readable schema stays, because it is plain JSON with no CDN. This asserts the
+    two broken pages are gone and the schema is still there, so a future
+    `FastAPI()` default cannot quietly reintroduce a broken page.
+    """
+    c = TestClient(main.app)
+    for path in ("/docs", "/redoc"):
+        assert c.get(path).status_code == 404, f"{path} should not be served"
+    schema = c.get("/openapi.json")
+    assert schema.status_code == 200
+    assert schema.json()["info"]["title"] == "AnalysisDesk"
+
+
+def test_the_version_has_one_source_of_truth():
+    """pyproject.toml is the only place the version is written.
+
+    main.py used to type it a second time, so `status.version` and the packaged
+    version could drift with nothing to catch it. Read it from the installed
+    metadata and assert it matches pyproject -- the two-copies-of-one-fact
+    failure this project keeps removing.
+    """
+    import tomllib
+    from importlib.metadata import version as dist_version
+
+    from app import main
+
+    root = Path(__file__).resolve().parent.parent
+    declared = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]["version"]
+    assert main.app.version == declared
+    assert dist_version("analysisdesk") == declared
+
+
+def test_an_unusable_symbol_is_refused_before_it_reaches_upstream(monkeypatch):
+    """A malformed symbol is a typo or a path-walk, not a market read.
+
+    It used to be forwarded to Yahoo verbatim, which spent a request and came
+    back with the input echoed in the message. It is refused here now, and the
+    market layer is never called.
+    """
+    called = []
+
+    async def spy(sym, iv, **kw):
+        called.append(sym)
+        raise AssertionError("the market layer must not be reached for a bad symbol")
+
+    monkeypatch.setattr(main.market, "fetch_series", spy)
+    main._hits.clear()
+    c = TestClient(main.app)
+    for bad in ("../../../etc/passwd", "has space", "a/b", "x" * 21, "sym;drop"):
+        r = c.get("/api/analyze", params={"symbol": bad, "interval": "1h"})
+        assert r.status_code == 400, f"{bad!r} should be rejected"
+    assert not called, "a rejected symbol must not cost an upstream call"
+
+
+def test_a_valid_symbol_shape_still_passes_validation(monkeypatch):
+    """The validator must not cry wolf: real Yahoo symbols keep working."""
+    from app import main
+
+    for good in ("EURUSD=X", "BTC-USD", "^GSPC", "BRK.B", "GC=F", "XAUUSD"):
+        assert main._valid_symbol(good), f"{good} is a real symbol"
+
+
+def test_a_market_failure_is_reported_in_the_requested_language(monkeypatch):
+    """The one error a user reads in the card must follow `lang`.
+
+    It used to be Arabic whatever was asked for, so an English reader got a
+    foreign sentence under an English heading.
+    """
+    from app import main
+
+    c = _wire(monkeypatch, market.MarketDataError("Yahoo returned 503"))
+    ar = c.get("/api/analyze?symbol=EURUSD=X&interval=1h&lang=ar").json()["detail"]
+    en = c.get("/api/analyze?symbol=EURUSD=X&interval=1h&lang=en").json()["detail"]
+    assert "تعذّر قراءة" in ar and "503" in ar
+    assert "could not read" in en and "503" in en
+    # The English message must not carry Arabic, and vice versa.
+    assert not any("\u0600" <= ch <= "\u06ff" for ch in en)
+    assert "could not read" not in ar
+
+
+# ============================ identity and discovery (favicon, meta, license)
+# A public project with no icon, no description and an undetected license reads
+# as abandoned. These pin the surfaces that make it discoverable and legal.
+
+def test_the_favicon_is_served_at_both_paths():
+    """The page declares an SVG icon; browsers still ask for /favicon.ico.
+
+    A 404 there is a broken icon on every visit, so both paths must answer.
+    """
+    c = TestClient(main.app)
+    for path in ("/favicon.ico", "/static/favicon.svg"):
+        r = c.get(path)
+        assert r.status_code == 200, f"{path} should be served"
+        assert "svg" in r.headers["content-type"]
+
+
+def test_both_pages_declare_a_description_and_an_icon():
+    """A shareable link needs a description and an icon; otherwise it previews
+    as a bare URL. Assert the tags exist in the shipped files."""
+    root = Path(__file__).resolve().parent.parent / "web"
+    for name in ("index.html", "pitch.html"):
+        html = (root / name).read_text("utf-8")
+        assert 'name="description"' in html, f"{name} has no meta description"
+        assert 'rel="icon"' in html, f"{name} declares no icon"
+        assert 'property="og:title"' in html, f"{name} has no Open Graph title"
+        assert 'property="og:description"' in html, f"{name} has no Open Graph description"
+
+
+def test_the_license_is_plain_mit_and_the_disclaimer_is_a_notice():
+    """GitHub detects a license only from a clean LICENSE file.
+
+    The market-data disclaimer used to live in LICENSE after the MIT text, which
+    made GitHub report the license as "NOASSERTION" -- an unrecognised license on
+    a public repo. The disclaimer now lives in NOTICE, and LICENSE is pure MIT.
+    """
+    root = Path(__file__).resolve().parent.parent
+    license_text = (root / "LICENSE").read_text("utf-8")
+    assert license_text.startswith("MIT License")
+    assert "Permission is hereby granted" in license_text
+    # The disclaimer must not be in LICENSE any more.
+    assert "Third-party market data" not in license_text
+    assert "investment advice" not in license_text
+    # And it must still exist, in NOTICE.
+    notice = (root / "NOTICE").read_text("utf-8")
+    assert "investment advice" in notice
+    assert "Yahoo Finance" in notice
+
+
+def test_a_security_policy_and_a_task_runner_exist():
+    """A public repo needs a way to report a vuln and one command to check it."""
+    root = Path(__file__).resolve().parent.parent
+    assert (root / "SECURITY.md").exists()
+    security = (root / "SECURITY.md").read_text("utf-8")
+    assert "Reporting a vulnerability" in security
+    makefile = (root / "Makefile").read_text("utf-8")
+    assert "check:" in makefile and "test:" in makefile
+
+
+def test_the_base_image_is_pinned_by_digest():
+    """`python:3.12-slim` is a tag that moves; the digest does not.
+
+    A rebuild months from now would otherwise pull a different base than the one
+    CI tested. This asserts the FROM line carries a sha256 digest, so a future
+    edit cannot quietly drop back to a floating tag.
+    """
+    root = Path(__file__).resolve().parent.parent
+    df = (root / "Dockerfile").read_text("utf-8")
+    from_lines = [ln for ln in df.splitlines() if ln.startswith("FROM")]
+    assert from_lines, "the Dockerfile has no FROM line"
+    for ln in from_lines:
+        assert "@sha256:" in ln, f"base image not pinned by digest: {ln}"
+
+
+def test_the_version_falls_back_to_pyproject_when_uninstalled(monkeypatch):
+    """The container copies the code without building a wheel, so the installed
+    metadata is absent there. The version must still resolve -- from the same
+    pyproject.toml the metadata would have been built from -- rather than
+    degrade to a placeholder on the deployed image."""
+    import importlib.metadata as md
+
+    from app import main
+
+    def missing(_name):
+        raise md.PackageNotFoundError("analysisdesk")
+
+    monkeypatch.setattr(main, "_dist_version", missing)
+    assert main._version() == "1.1.0"
+
+
+def test_the_image_carries_pyproject_for_the_version(monkeypatch):
+    """The fallback reads pyproject.toml, so the image must copy it in."""
+    root = Path(__file__).resolve().parent.parent
+    df = (root / "Dockerfile").read_text("utf-8")
+    assert "COPY pyproject.toml" in df, "the image must carry the version source"
+
+
+# ============================ the API contract is typed, not implied
+# The endpoints used to return bare dicts, so /openapi.json described every
+# response as an empty object and a client had no schema to generate against.
+# These pin the contract: every data endpoint names a model, and the schema
+# carries the fields -- so a renamed or dropped field fails here, not in a
+# client that already shipped.
+
+def test_every_data_endpoint_declares_a_response_model():
+    from app import main
+
+    spec = TestClient(main.app).get("/openapi.json").json()
+    paths = spec["paths"]
+    expected = {
+        ("/api/health", "get"), ("/api/status", "get"), ("/api/symbols", "get"),
+        ("/api/analyze", "get"), ("/api/backtest", "get"), ("/api/alerts", "get"),
+        ("/api/news", "get"), ("/api/candles", "get"),
+    }
+    for path, method in expected:
+        schema = paths[path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert "$ref" in schema, f"{method} {path} has no response model"
+        assert schema["$ref"].startswith("#/components/schemas/"), schema
+
+
+def test_the_openapi_schema_describes_the_real_fields():
+    """A generated client reads these names; they must be the wire names."""
+    from app import main
+
+    spec = TestClient(main.app).get("/openapi.json").json()
+    comps = spec["components"]["schemas"]
+    # The full analyze shape is described, nested blocks and all.
+    analyze = comps["AnalyzeOut"]["properties"]
+    for field in ("symbol", "interval", "instrument", "indicators", "signal",
+                  "narrative", "disclaimer"):
+        assert field in analyze, f"AnalyzeOut is missing {field}"
+    assert set(comps["IndicatorsOut"]["properties"]) >= {"rsi", "atr", "supports", "resistances"}
+    assert set(comps["SignalOut"]["properties"]) >= {"direction", "score", "targets", "rules", "warnings"}
+    # `class` is a Python keyword; the wire name must still be "class".
+    assert "class" in comps["SymbolOut"]["properties"]
+
+
+def test_a_missing_spot_quote_omits_the_price_not_null_it(monkeypatch):
+    """The contract for a failed spot read is an error and no price key.
+
+    A null price would read as "the price is null", which is different from
+    "there is no price" -- the distinction the whole desk is built on. The
+    response model must not reintroduce the null.
+    """
+    c = _wire(monkeypatch, _series("GC=F", kind="FUTURE"), spot_error="upstream 503")
+    body = c.get("/api/analyze?symbol=GC=F&interval=1h").json()
+    assert body["spot"]["error"] and "price" not in body["spot"]

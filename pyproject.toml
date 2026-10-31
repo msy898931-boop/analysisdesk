@@ -38,6 +38,12 @@ dev = [
     "mypy>=1.11",
     "bandit>=1.7",
     "pip-audit>=2.7",
+    # The test client's supported HTTP library. Starlette 1.x prefers httpx2 and
+    # only falls back to httpx with a deprecation warning, so this is installed
+    # for the tests, not by the app -- the runtime code still imports httpx
+    # directly. Naming it here keeps the warning from becoming noise that hides
+    # the next real one.
+    "httpx2>=2.16",
 ]
 
 [project.urls]

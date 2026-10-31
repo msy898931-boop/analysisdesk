@@ -41,6 +41,7 @@ cannot do its job honestly, it says so rather than returning a friendly default.
     app/news.py      keyless RSS → headlines (titles only)
     app/store.py     SQLite: alert subscriptions + a visit counter
     app/alerts.py    level-crossing detection + opt-in Telegram delivery
+    app/schemas.py   pydantic response models — the API contract, checked
 ```
 
 ### `app/market.py` — the only place a price enters
@@ -131,6 +132,24 @@ GET /api/analyze?symbol=XAUUSD&interval=1h&lang=ar
 
 Every field the card renders is escaped at the boundary; every figure is
 rounded by the one rule in `indicators`.
+
+## The API contract is a type, not a paragraph
+
+The endpoints used to return bare dicts, so `/openapi.json` described every
+response as an empty object and a client had nothing to generate against — the
+contract lived only in README prose, and prose cannot be checked. Each data
+endpoint now names a `response_model` from `app/schemas.py`, and FastAPI
+validates the real response against it. A field that is added, renamed, or
+dropped now fails a test instead of shipping to a client that already parsed the
+old shape.
+
+The models mirror what the code returns; they compute nothing. The subtle part
+is the *absent* field: when a spot quote fails, the response omits `price`
+rather than sending `price: null`, because "the price is null" and "there is no
+price" are different claims — the distinction the whole desk is built on. That
+is why `/api/analyze` is declared `response_model_exclude_unset=True`: the model
+would otherwise fill the gap with a null and quietly turn "unknown" into a
+value. A test pins exactly that (`test_a_missing_spot_quote_omits_the_price_not_null_it`).
 
 ## Topology and deployment
 

@@ -191,6 +191,18 @@ curl "http://localhost:12000/api/analyze?symbol=GC=F&interval=1h&lang=ar"
   — بيمنع أي سكربت inline)، `X-Content-Type-Options: nosniff`،
   `X-Frame-Options: DENY`، `Referrer-Policy: no-referrer`.
 - **الحاوية بتشتغل بمستخدم غير root** (`desk`, uid 10001).
+- **الرمز مُتحقَّق منه قبل أي نداء خارجي**: `_valid_symbol` بيرفض أي شكل مو
+  رمز Yahoo صالح (`^[A-Za-z0-9.^=_-]{1,20}$`)، فلا مسافة ولا `/` ولا `..`
+  يوصل للـURL upstream. مو SSRF — المضيف ثابت — بس إدخال غير محقّق كان يكلّف
+  نداءً ضايعاً ويرجع صدىً بالنص.
+- **`/docs` و`/redoc` و`/openapi.json` مطفأة عن قصد.** Swagger الافتراضي
+  بيحمّل JS من CDN، وسياسة `script-src 'self'` بتحجبه — فالصفحة كانت ترد 200
+  كقشرة فاضية (إشارة «كل شي تمام» فوق صفحة ما بتشتغل). الـAPI موثّق بالـREADME
+  بدلها.
+- **فحص ثغرات في الكود والتاريخ**: CodeQL (security-and-quality) + gitleaks
+  على كامل التاريخ في `.github/workflows/security.yml`، مع `pip-audit` و
+  `bandit` في الـCI.
+- **سياسة الإفصاح في [`SECURITY.md`](SECURITY.md)**.
 - **`pip-audit` نظيف** و**`bandit` نظيف** (لا نتائج medium/high).
 
 ---
@@ -207,6 +219,7 @@ app/
   news.py        عناوين RSS عامة بلا مفاتيح (عناوين فقط، بلا ادّعاء مشاعر)
   store.py       حالة دائمة (SQLite): التنبيهات وعدّاد الزيارات
   alerts.py      كشف عبور المستوى + إرسال تيليجرام (مطفأ افتراضياً)
+  schemas.py     نماذج pydantic لاستجابات الـAPI — العقد موثّق ومُتحقَّق منه
   main.py        واجهة FastAPI + رؤوس الأمان + حدّ الطلبات
 web/index.html   الواجهة (عربي/إنجليزي، بلا أي اعتماد خارجي)
 web/pitch.html   عرض المشروع (عربي/إنجليزي، بلا سكربت — التبديل بـCSS) يُخدَم على /pitch
@@ -238,14 +251,18 @@ python -m pytest tests/                    # مع اختبارات الشبكة 
 
 ### الفحوصات / Checks
 
+بوابة واحدة لكل شي: `make check` (تشغّل الـlint والأنواع والأمان والاختبارات
+وواجهة node — نفس اللي بالـCI بالضبط). أو فردياً:
+
 ```bash
 ruff check app/ tests/ scripts/
-mypy app/ --ignore-missing-imports
+mypy
 bandit -q -r app/ scripts/ -ll
 pip-audit -r requirements.lock
 ```
 
-كلها بتشتغل بالـCI على Python 3.11 و3.12 (`.github/workflows/ci.yml`).
+كلها بتشتغل بالـCI على Python 3.11 و3.12 (`.github/workflows/ci.yml`)، وفحص
+ثغرات منفصل (CodeQL + gitleaks) في `.github/workflows/security.yml`.
 
 ---
 
@@ -263,6 +280,13 @@ pip-audit -r requirements.lock
   قرص الحاوية اللي بينمسح عند إعادة النشر/التشغيل. التنبيهات بتضيع عند إعادة
   التشغيل. الحل الجاهز: `DESK_DATA_DIR` على قرص مثبّت (Render Disk) أو قاعدة
   خارجية. لحد ما ينضبط هيك، التنبيهات بتنبنى من جديد بعد كل إعادة تشغيل.
+- **حلقة التنبيهات مطفأة بالإنتاج، عن قصد — ومكتوب صراحةً.** الـAPI بيقدر
+  يسجّل تنبيهات، و`scripts/run_alerts.py` بينفّذ تمريرة واحدة، بس **ما في
+  مجدول بيناديها** على الخطة المجانية: Render المجاني بلا cron jobs، والحاويات
+  منفصلة، والمخزن مؤقت. فالتنبيهات **ميزة مسلَّحة محلياً، مو خدمة شغّالة**.
+  لِتشغيلها فعلاً بدك مخزناً دائماً **و** مجدولاً خارجياً (`ALERTS_ENABLED=1`
+  + نداء مجدول للـendpoint). لحد ما ينضبط هيك، `/api/alerts` بترجّع
+  `delivery_on: false`، وما في شي بيدّعي غير هيك.
 - **نسخة واحدة (worker) عن قصد**: الكاش وعدّاد الحد بالمذاكرة. تشغيل أكثر من
   worker بيعطي عدّاد حد لكل worker على حدة (الحد الفعلي بيتضاعف) وكاش لكل
   واحد. صحّتها تحتاج مخزن مشترك (Redis) — مو موجود اليوم، ومذكور بدل ما يُخبّى.
