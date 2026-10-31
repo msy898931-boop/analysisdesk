@@ -127,6 +127,17 @@ code makes should be a claim the code can back.
 
 ### Security
 
+- **The API key was bypassable by a forged header.** With `DESK_API_KEY` set,
+  the guard exempted any request carrying `Sec-Fetch-Site: same-origin`, on the
+  reasoning that a browser writes that header and page script cannot. True of a
+  browser, false of a script: `curl -H 'Sec-Fetch-Site: same-origin'` reached
+  every data endpoint with no key at all, so the key protected nothing against
+  the caller it exists to stop. A header the client sets is not a credential.
+  The exemption is gone; when the key is set it is required from **every**
+  caller, compared with `hmac.compare_digest`. A public page cannot hold a
+  secret, so there is no honest page exemption to offer — the gate fails closed,
+  and the docs now say the key is for an API-only deploy (production leaves it
+  unset, so the public page is unaffected).
 - **RSS is parsed with `defusedxml`.** `xml.etree` will happily expand a
   crafted entity payload ("billion laughs") in a feed we did not write; the
   parser now refuses entity expansion and external entities, and a malformed

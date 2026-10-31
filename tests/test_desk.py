@@ -1018,10 +1018,13 @@ def test_api_key_turns_away_a_direct_caller(monkeypatch):
     assert r.status_code == 401
 
 
-def test_api_key_accepts_the_bundled_page(monkeypatch):
-    """The page's own fetch cannot send the key, so it is trusted by Sec-Fetch-Site.
+def test_api_key_is_not_bypassed_by_a_forged_sec_fetch_site(monkeypatch):
+    """A caller-set header must not stand in for the key.
 
-    Driven through the guard directly: the point is the header, not a live read.
+    The gate used to trust `Sec-Fetch-Site: same-origin` as proof of the bundled
+    page. A browser sets it and page script cannot -- but a script sets it
+    freely, so `curl -H 'Sec-Fetch-Site: same-origin'` got in with no key. A
+    header the caller controls is not a credential; the gate fails closed now.
     """
     import asyncio
     from types import SimpleNamespace
@@ -1029,13 +1032,19 @@ def test_api_key_accepts_the_bundled_page(monkeypatch):
     from fastapi import HTTPException
     monkeypatch.setattr(main, "API_KEY", "s3cret")
     main._hits.clear()
-    page = SimpleNamespace(headers={"sec-fetch-site": "same-origin"},
-                           client=SimpleNamespace(host="10.0.0.1"))
-    asyncio.run(main.guard(page))  # the page passes without the key
-    direct = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.2"))
+    forged = SimpleNamespace(headers={"sec-fetch-site": "same-origin"},
+                             client=SimpleNamespace(host="10.0.0.1"))
     with pytest.raises(HTTPException) as err:
-        asyncio.run(main.guard(direct))
+        asyncio.run(main.guard(forged))
     assert err.value.status_code == 401
+    # The key itself still works, and only the exact key.
+    good = SimpleNamespace(headers={"x-api-key": "s3cret"},
+                           client=SimpleNamespace(host="10.0.0.2"))
+    asyncio.run(main.guard(good))
+    near = SimpleNamespace(headers={"x-api-key": "s3cret "},
+                           client=SimpleNamespace(host="10.0.0.3"))
+    with pytest.raises(HTTPException):
+        asyncio.run(main.guard(near))
 
 
 def test_bad_parameter_is_free(monkeypatch):
@@ -2098,16 +2107,19 @@ def test_the_rate_limit_returns_429_with_a_retry_after(monkeypatch):
     assert r.status_code == 429 and r.headers.get("retry-after") == "60"
 
 
-def test_the_api_key_gate_admits_the_page_and_turns_away_a_direct_call(monkeypatch):
-    """The bundled page is trusted by a header a page cannot forge."""
+def test_the_api_key_gate_requires_the_key_from_every_caller(monkeypatch):
+    """With a key set, only the key opens the endpoint -- a spoofed page header
+    does not. The gate no longer distinguishes page from script, because it
+    cannot: both are just a client that sets headers."""
     from app import main
 
     c = _wire(monkeypatch, _series())
     monkeypatch.setattr(main, "API_KEY", "secret")
     direct = c.get("/api/analyze?symbol=EURUSD=X&interval=1h")
     assert direct.status_code == 401
-    page = c.get("/api/analyze?symbol=EURUSD=X&interval=1h", headers={"sec-fetch-site": "same-origin"})
-    assert page.status_code == 200
+    forged_page = c.get("/api/analyze?symbol=EURUSD=X&interval=1h",
+                        headers={"sec-fetch-site": "same-origin"})
+    assert forged_page.status_code == 401
     keyed = c.get("/api/analyze?symbol=EURUSD=X&interval=1h", headers={"x-api-key": "secret"})
     assert keyed.status_code == 200
 
