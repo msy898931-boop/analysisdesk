@@ -58,6 +58,7 @@ class StatusOut(BaseModel):
     cache: CacheInfo
     rate_limit_per_min: int
     api_key_required: bool
+    alerts_configured: bool
     tracked_clients: int
     errors: ErrorInfo
     store: StoreInfo

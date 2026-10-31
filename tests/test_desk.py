@@ -3089,6 +3089,7 @@ def test_alert_run_once_with_no_subscriptions_is_a_clean_noop(tmp_path, monkeypa
 
 def test_alert_endpoints_arm_list_and_remove(tmp_path, monkeypatch):
     monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("ALERTS_TOKEN", "svc-secret")
     import importlib
 
     from app import main as m
@@ -3097,22 +3098,24 @@ def test_alert_endpoints_arm_list_and_remove(tmp_path, monkeypatch):
     importlib.reload(s)
     importlib.reload(m)
     c = TestClient(m.app)
-    r = c.post("/api/alerts?chat_id=u1&symbol=XAUUSD&price=4000&direction=BUY&interval=1h")
+    h = {"x-alerts-token": "svc-secret"}
+    r = c.post("/api/alerts?chat_id=u1&symbol=XAUUSD&price=4000&direction=BUY&interval=1h", headers=h)
     assert r.status_code == 200 and r.json()["armed"] is True
     aid = r.json()["id"]
-    listed = c.get("/api/alerts?chat_id=u1").json()
+    listed = c.get("/api/alerts?chat_id=u1", headers=h).json()
     assert len(listed["alerts"]) == 1
     assert listed["alerts"][0]["price"] == 4000.0
     # Another chat sees nothing.
-    assert c.get("/api/alerts?chat_id=u2").json()["alerts"] == []
+    assert c.get("/api/alerts?chat_id=u2", headers=h).json()["alerts"] == []
     # Removing with the wrong chat id fails; the right one works.
-    assert c.delete(f"/api/alerts/{aid}?chat_id=u2").status_code == 404
-    assert c.delete(f"/api/alerts/{aid}?chat_id=u1").status_code == 200
-    assert c.get("/api/alerts?chat_id=u1").json()["alerts"] == []
+    assert c.delete(f"/api/alerts/{aid}?chat_id=u2", headers=h).status_code == 404
+    assert c.delete(f"/api/alerts/{aid}?chat_id=u1", headers=h).status_code == 200
+    assert c.get("/api/alerts?chat_id=u1", headers=h).json()["alerts"] == []
 
 
 def test_alert_endpoint_validates_input(tmp_path, monkeypatch):
     monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.setenv("ALERTS_TOKEN", "svc-secret")
     import importlib
 
     from app import main as m
@@ -3121,14 +3124,16 @@ def test_alert_endpoint_validates_input(tmp_path, monkeypatch):
     importlib.reload(s)
     importlib.reload(m)
     c = TestClient(m.app)
+    h = {"x-alerts-token": "svc-secret"}
     base = "/api/alerts?chat_id=u&symbol=XAUUSD&price=4000"
-    assert c.post(base + "&interval=99").status_code == 400
-    assert c.post(base + "&direction=SIDEWAYS").status_code == 400
-    assert c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=-5").status_code == 400
+    assert c.post(base + "&interval=99", headers=h).status_code == 400
+    assert c.post(base + "&direction=SIDEWAYS", headers=h).status_code == 400
+    assert c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=-5", headers=h).status_code == 400
 
 
 def test_alert_endpoint_reports_503_when_store_is_down(monkeypatch):
     monkeypatch.setenv("DESK_DATA_DIR", "/proc/cannot/write/here")
+    monkeypatch.setenv("ALERTS_TOKEN", "svc-secret")
     import importlib
 
     from app import main as m
@@ -3137,8 +3142,93 @@ def test_alert_endpoint_reports_503_when_store_is_down(monkeypatch):
     importlib.reload(s)
     importlib.reload(m)
     c = TestClient(m.app)
-    r = c.post("/api/alerts?chat_id=u&symbol=XAUUSD&price=4000&direction=BUY")
+    r = c.post(
+        "/api/alerts?chat_id=u&symbol=XAUUSD&price=4000&direction=BUY",
+        headers={"x-alerts-token": "svc-secret"},
+    )
     assert r.status_code == 503
+
+
+# ------------------------------------------- alerts need the service token
+#
+# A chat id is an identifier, not a secret -- it leaks through Telegram groups
+# and forwarded messages -- so it must not be the only thing standing between a
+# stranger and another user's alerts. The credential is a service token held by
+# the bot; a chat id only selects the row.
+
+
+def _reloaded_app(monkeypatch, tmp_path, configured: str | None):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    if configured is None:
+        monkeypatch.delenv("ALERTS_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("ALERTS_TOKEN", configured)
+    import importlib
+
+    from app import main as m
+    from app import store as s
+
+    importlib.reload(s)
+    importlib.reload(m)
+    return m
+
+
+def test_alerts_are_closed_when_no_token_is_configured(tmp_path, monkeypatch):
+    """Unset token means the endpoints are shut (503), never open.
+
+    This is the whole point of the fix: "no credential configured" must read as
+    "do not serve", not "serve anyone". Failing open here would just be the
+    bypass again with a different name.
+    """
+    m = _reloaded_app(monkeypatch, tmp_path, configured=None)
+    c = TestClient(m.app)
+    assert c.get("/api/alerts?chat_id=u1").status_code == 503
+    assert c.post("/api/alerts?chat_id=u1&symbol=XAUUSD&price=4000&direction=BUY").status_code == 503
+    assert c.delete("/api/alerts/1?chat_id=u1").status_code == 503
+
+
+def test_alerts_reject_a_missing_or_wrong_token(tmp_path, monkeypatch):
+    """A guessed chat id no longer gets in; the token is required."""
+    m = _reloaded_app(monkeypatch, tmp_path, configured="svc-secret")
+    c = TestClient(m.app)
+    # No token at all: refused, whatever chat id is named.
+    assert c.get("/api/alerts?chat_id=123456789").status_code == 401
+    # A wrong token is refused too.
+    assert c.get("/api/alerts?chat_id=123456789", headers={"x-alerts-token": "nope"}).status_code == 401
+    # The right token is accepted.
+    assert c.get("/api/alerts?chat_id=123456789", headers={"x-alerts-token": "svc-secret"}).status_code == 200
+
+
+def test_alerts_token_is_not_accepted_as_the_desk_key_and_vice_versa(tmp_path, monkeypatch):
+    """The two credentials are independent; neither substitutes for the other."""
+    m = _reloaded_app(monkeypatch, tmp_path, configured="svc-secret")
+    monkeypatch.setenv("DESK_API_KEY", "desk-key")
+    import importlib
+
+    importlib.reload(m)
+    c = TestClient(m.app)
+    # Alerts token alone cannot satisfy the desk key.
+    assert c.get("/api/alerts?chat_id=u", headers={"x-alerts-token": "svc-secret"}).status_code == 401
+    # Desk key alone cannot satisfy the alerts token.
+    assert c.get("/api/alerts?chat_id=u", headers={"x-api-key": "desk-key"}).status_code == 401
+    # Both together are accepted.
+    assert (
+        c.get("/api/alerts?chat_id=u", headers={"x-api-key": "desk-key", "x-alerts-token": "svc-secret"}).status_code
+        == 200
+    )
+
+
+def test_status_reports_whether_alerts_are_configured(tmp_path, monkeypatch):
+    """A client can tell "closed" from "wrong token" without guessing."""
+    m = _reloaded_app(monkeypatch, tmp_path, configured=None)
+    c = TestClient(m.app)
+    assert c.get("/api/status").json()["alerts_configured"] is False
+    monkeypatch.setenv("ALERTS_TOKEN", "svc-secret")
+    import importlib
+
+    importlib.reload(m)
+    c = TestClient(m.app)
+    assert c.get("/api/status").json()["alerts_configured"] is True
 
 
 # ---------------------------------------------------------------- news

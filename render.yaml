@@ -36,3 +36,10 @@ services:
       # is open but rate-limited, which is what production does.
       - key: DESK_API_KEY
         sync: false
+      # The alerts API is service-to-service, so its credential is a token the
+      # bot holds -- not the caller's chat id, which is an identifier, not a
+      # secret. Left unset here on purpose: with no token the alerts endpoints
+      # answer 503 (closed), which is the safe default until a bot is wired up.
+      # Set it in the dashboard when you deploy one.
+      - key: ALERTS_TOKEN
+        sync: false
