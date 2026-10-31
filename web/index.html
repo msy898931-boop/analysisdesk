@@ -27,6 +27,10 @@
   .lang{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:4px}
   .lang button{background:none;border:0;color:var(--dim);padding:7px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
   .lang button.on{background:var(--teal);color:#04120f}
+  .hdr-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .pitchlink{display:inline-block;text-decoration:none;color:var(--dim);border:1px solid var(--line);
+    background:var(--panel);border-radius:11px;padding:9px 15px;font-size:13px;font-weight:600;transition:.15s}
+  .pitchlink:hover{border-color:var(--teal);color:var(--txt)}
 
   .controls{display:grid;grid-template-columns:1fr auto;gap:12px;margin-bottom:18px}
   .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);
@@ -154,9 +158,12 @@
         <p id="tagline">تحليل فني شفّاف على بيانات سوق حقيقية</p>
       </div>
     </div>
-    <div class="lang" role="group" aria-label="Language / اللغة">
-      <button id="l-ar" class="on" aria-pressed="true">العربية</button>
-      <button id="l-en" aria-pressed="false">English</button>
+    <div class="hdr-right">
+      <a id="pitch" class="pitchlink" href="/pitch">العرض</a>
+      <div class="lang" role="group" aria-label="Language / اللغة">
+        <button id="l-ar" class="on" aria-pressed="true">العربية</button>
+        <button id="l-en" aria-pressed="false">English</button>
+      </div>
     </div>
   </header>
 
