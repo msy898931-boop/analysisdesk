@@ -181,7 +181,12 @@ class NarrativeOut(BaseModel):
     # the desk names the model only when a model wrote the prose.
     model: str | None = None
     source: str
-    note: str
+    # null when a model wrote the prose (there is nothing to explain), a string
+    # when the deterministic fallback ran and owes the reader a reason. Typed
+    # `str` before, which the model-success path -- note=None in ai.narrate --
+    # failed validation on, turning every successful read into a 500. The
+    # success path is the one path no API-level test drove.
+    note: str | None = None
 
 
 class AnalyzeOut(BaseModel):
@@ -242,10 +247,19 @@ class HeadlineOut(BaseModel):
     published: str
 
 
+class FeedFailureOut(BaseModel):
+    # A failed feed is named and given a reason, not collapsed to a bare string:
+    # "CNBC Markets: HTTP 503" tells the reader which source to distrust, and a
+    # list of strings would throw the feed name away. The schema said list[str]
+    # while news.py built these objects, so any failing feed 500'd the endpoint.
+    name: str
+    error: str
+
+
 class NewsOut(BaseModel):
     headlines: list[HeadlineOut]
     sources_ok: list[str]
-    sources_failed: list[str]
+    sources_failed: list[FeedFailureOut]
     usable: bool
     note: str
 

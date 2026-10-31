@@ -2004,6 +2004,46 @@ def test_analyze_rejects_an_unknown_interval(monkeypatch):
     assert r.status_code == 400 and "unsupported interval" in r.json()["detail"]
 
 
+def test_analyze_returns_200_when_the_model_answers(monkeypatch):
+    """The model-success path must serialize, not 500.
+
+    ai.narrate returns note=None when a model wrote the prose, but the schema
+    typed note as a required `str`. No API-level test set a key *and* let the
+    model answer, so every analyze call in the suite took the deterministic
+    branch (note always a string) and the mismatch stayed invisible -- until a
+    valid key reached production and every successful read became a 500.
+    """
+    from app import ai
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+
+    async def model_answers(client, model, messages):
+        # No figures and no banned words, so the verify guard accepts it.
+        return "The read is long and the indicators agree.", None
+
+    monkeypatch.setattr(ai, "_try_model", model_answers)
+    c = _wire(monkeypatch, _series())
+
+    r = c.get("/api/analyze?symbol=EURUSD=X&interval=1h&lang=en")
+    assert r.status_code == 200, r.text
+    narrative = r.json()["narrative"]
+    assert narrative["source"] == "model"
+    assert narrative["model"] == ai.MODELS[0]
+    assert narrative["note"] is None  # nothing to explain; the model wrote it
+
+
+def test_narrative_note_is_optional_but_present(monkeypatch):
+    """note is null on success and a reason on fallback -- both must serialize."""
+    from app import ai, schemas
+
+    ok = schemas.NarrativeOut(text="t", model="m", source="model", note=None)
+    assert ok.note is None
+    fell_back = schemas.NarrativeOut(text="t", source="deterministic", note="key rejected")
+    assert fell_back.note == "key rejected"
+    # The field is still always emitted, so a client never has to guess.
+    assert "note" in ok.model_dump() and "note" in fell_back.model_dump()
+
+
 def test_analyze_rejects_an_unknown_language(monkeypatch):
     c = _wire(monkeypatch, _series())
     r = c.get("/api/analyze?symbol=EURUSD=X&interval=1h&lang=fr")
@@ -3209,6 +3249,52 @@ def test_news_endpoint_shape(monkeypatch):
     assert "sources_ok" in body and "sources_failed" in body
 
 
+def test_news_endpoint_survives_a_failed_feed(monkeypatch):
+    """A failing feed must be reported, not turn the endpoint into a 500.
+
+    The old schema declared sources_failed as list[str] while news.py built
+    [{name, error}]. The shape test above stubbed fetch_news with an *empty*
+    list, so the mismatch never reached the serializer -- the same blind spot
+    that hid the narrative bug: coverage ran the line, the contract was never
+    checked.
+    """
+    from app import news
+    from app.main import app as _app
+
+    async def one_feed_down(client, feed):
+        if feed["name"].startswith("CNBC"):
+            return [], "HTTP 503"
+        return [news.Headline("Gold up", feed["name"], "u")], None
+
+    monkeypatch.setattr(news, "_fetch_feed", one_feed_down)
+    news._cache.clear()
+
+    body = TestClient(_app).get("/api/news?limit=5").json()
+    assert body["usable"] is True
+    # The failed feed is named with its reason, so a reader can distrust it.
+    failed = body["sources_failed"]
+    assert failed and all({"name", "error"} <= set(f) for f in failed)
+    assert any(f["name"].startswith("CNBC") and "503" in f["error"] for f in failed)
+
+
+def test_news_endpoint_survives_when_every_feed_fails(monkeypatch):
+    """All feeds down is a usable=False answer, not an error status."""
+    from app import news
+    from app.main import app as _app
+
+    async def all_down(client, feed):
+        return [], "HTTP 500"
+
+    monkeypatch.setattr(news, "_fetch_feed", all_down)
+    news._cache.clear()
+
+    r = TestClient(_app).get("/api/news")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["usable"] is False and body["headlines"] == []
+    assert len(body["sources_failed"]) == len(news.FEEDS)
+
+
 # ---------------------------------------------------------------- performance
 
 
@@ -3583,6 +3669,13 @@ def test_the_openapi_schema_describes_the_real_fields():
     assert set(comps["SignalOut"]["properties"]) >= {"direction", "score", "targets", "rules", "warnings"}
     # `class` is a Python keyword; the wire name must still be "class".
     assert "class" in comps["SymbolOut"]["properties"]
+    # The two fields that were declared stricter than the code emits. The spec
+    # must describe them as nullable/list-of-objects, or a generated client
+    # would reject the very responses the server sends.
+    note_schema = comps["NarrativeOut"]["properties"]["note"]
+    assert any("null" in str(v) for v in note_schema.values()), note_schema
+    failed_schema = comps["NewsOut"]["properties"]["sources_failed"]
+    assert failed_schema["items"]["$ref"].endswith("FeedFailureOut")
 
 
 def test_a_missing_spot_quote_omits_the_price_not_null_it(monkeypatch):

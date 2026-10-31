@@ -11,6 +11,23 @@ code makes should be a claim the code can back.
 
 ### Fixed — hardening
 
+- **Every successful AI read returned a 500.** `ai.narrate` sets `note=None`
+  when a model wrote the prose (there is nothing to explain), but `NarrativeOut`
+  typed `note` as a required `str`. The model-success path was the one path no
+  API-level test drove — every `/api/analyze` test in the suite took the
+  deterministic branch, where `note` is always a string — so the mismatch stayed
+  invisible until a *valid* key reached production, and then every read that
+  should have worked failed. The bug only surfaced because the key was fixed;
+  it had been masked by the very outage it hid behind. `note` is `str | None`
+  now, and a test drives the model-success path end to end.
+- **`/api/news` returned a 500 whenever any feed failed.** `news.py` builds
+  `sources_failed` as `[{name, error}]` so a reader can see *which* source to
+  distrust, but `NewsOut` declared `list[str]`. The shape test stubbed the
+  aggregator with an empty list, so the mismatch never reached the serializer.
+  The schema now matches the richer object (`FeedFailureOut`), and two tests
+  cover one feed down and every feed down. The `note`/`sources_failed` pair is
+  the same failure twice: **95% line coverage proves the lines ran, not that the
+  emitted body matches the declared contract.**
 - **The interactive API docs served an empty shell.** `/docs` and `/redoc`
   answered 200 while loading their JavaScript from a CDN that our own
   `script-src 'self'` policy blocks — an all-clear over a page that never
