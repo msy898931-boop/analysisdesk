@@ -59,6 +59,6 @@ jobs:
         # gitleaks walks every commit, not just the tip, so a key that was
         # committed and then deleted is still caught. It uses its built-in rules
         # unless a .gitleaks.toml overrides them.
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
