@@ -160,6 +160,31 @@ RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MIN", "60"))
 # bypass, not a credential. See guard() below.
 API_KEY = os.getenv("DESK_API_KEY", "").strip()
 
+# The alerts API is service-to-service: the bot arms and reads a user's alerts,
+# and the user never calls it directly (the bundled page does not touch it). So
+# its credential is a shared secret held by that service, not the caller's
+# chat id. A chat id is an *identifier*, not a secret -- Telegram chat ids leak
+# through groups and forwarded messages -- so treating it as one let anyone who
+# guessed a number read, arm, and delete another user's alerts. Unset means the
+# endpoints are *closed* (503), not open: an alerts feature with no credential
+# is not a feature to expose, and failing open would be the bypass again.
+ALERTS_TOKEN = os.getenv("ALERTS_TOKEN", "").strip()
+
+
+async def _alerts_guard(request: Request) -> None:
+    """Gate the alerts endpoints on the service token, fail-closed.
+
+    Order matters: the shared key/rate gate runs first (so an unconfigured desk
+    still throttles scraping), then the token. When `ALERTS_TOKEN` is unset the
+    endpoint answers 503 -- "not configured" -- rather than serving the data,
+    because the only safe reading of "no credential set" is "do not open".
+    """
+    if not ALERTS_TOKEN:
+        raise HTTPException(503, "alerts are not configured on this deployment")
+    if not hmac.compare_digest(request.headers.get("x-alerts-token", ""), ALERTS_TOKEN):
+        raise HTTPException(401, "missing or invalid alerts token")
+
+
 _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
@@ -313,6 +338,10 @@ async def status():
         "cache": market.cache_stats(),
         "rate_limit_per_min": RATE_LIMIT,
         "api_key_required": bool(API_KEY),
+        # Whether the alerts endpoints will serve at all. Unset token = they
+        # answer 503, so a client can tell "closed" from "wrong token" without
+        # guessing -- the same honesty `api_key_required` gives for the key.
+        "alerts_configured": bool(ALERTS_TOKEN),
         # The window is per-process, so this is the number of distinct callers
         # seen in the last minute -- the same set the limit is applied to.
         "tracked_clients": len(_hits),
@@ -463,8 +492,10 @@ async def backtest_endpoint(
 
 @app.get("/api/alerts", response_model=schemas.AlertsOut)
 async def list_alerts(request: Request, chat_id: str = Query(...)):
-    """List a chat's armed alerts. Scoped to the caller's chat id, nothing else."""
+    """List a chat's armed alerts, scoped to the chat and gated by the service
+    token. The chat id selects the row; it is not the credential."""
     await guard(request)
+    await _alerts_guard(request)
     return {"alerts": store.list_subscriptions(chat_id), "delivery_on": alerts.alerts_enabled()}
 
 
@@ -489,6 +520,7 @@ async def create_alert(  # noqa: PLR0913, PLR0917 - query params, not a call sit
     if not _valid_symbol(symbol):
         raise HTTPException(400, "unsupported symbol; use a Yahoo Finance symbol, e.g. EURUSD=X")
     await guard(request)
+    await _alerts_guard(request)
     sid = store.add_subscription(chat_id, symbol, interval, direction, price)
     if sid is None:
         raise HTTPException(503, "the alert store is unavailable; nothing was saved")
@@ -499,6 +531,7 @@ async def create_alert(  # noqa: PLR0913, PLR0917 - query params, not a call sit
 async def delete_alert(request: Request, alert_id: int, chat_id: str = Query(...)):
     """Remove one alert, but only if the caller's chat id owns it."""
     await guard(request)
+    await _alerts_guard(request)
     ok = store.remove_subscription(chat_id, alert_id)
     if not ok:
         raise HTTPException(404, "no such alert for this chat")

@@ -229,6 +229,13 @@ Stated here rather than left for a reader to discover:
   when `ALERTS_ENABLED` is set. Armed alerts persist to SQLite, but on an
   ephemeral host that file is gone after a restart, so an alert can be lost —
   `/api/status` says whether the store is durable.
+- **The alerts API is gated by a service token, not a chat id.** `/api/alerts*`
+  is service-to-service (the bot is the only caller; the bundled page never
+  touches it), so it requires `x-alerts-token` matching `ALERTS_TOKEN`. A chat id
+  is an identifier, not a secret — it leaks through groups — so it only selects
+  the rows, it is not the credential. With no token set the endpoints answer
+  `503` (closed) rather than serving anyone; `/api/status` reports
+  `alerts_configured` so a client can tell "closed" from "wrong token".
 - **One worker, on purpose.** The cache and the rate-limit counter live in
   memory; more than one worker would multiply the effective rate limit and split
   the cache. A correct multi-worker setup needs a shared store (Redis) first.

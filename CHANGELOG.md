@@ -127,6 +127,18 @@ code makes should be a claim the code can back.
 
 ### Security
 
+- **The alerts API trusted a chat id as its credential.** `/api/alerts*` took a
+  `chat_id` query parameter and nothing else, so anyone who knew or guessed a
+  Telegram chat id could read, arm, and delete that user's alerts (proved
+  against production: `GET /api/alerts?chat_id=123456789` answered `200` with no
+  credential). A chat id is an *identifier*, not a secret — it leaks through
+  groups and forwarded messages. The endpoints are service-to-service (the bot
+  is the only caller; the bundled page never touches them), so the credential is
+  now a shared token the bot holds, sent as `x-alerts-token`. With no token
+  configured the endpoints answer `503` (closed) rather than serving anyone:
+  failing open would just be the bypass under a new name. A chat id still selects
+  the row, so a caller can only reach the alerts it names — but it is no longer
+  the thing standing between a stranger and another user's data.
 - **The rate limit was bypassable by a forged `X-Forwarded-For`.** The client
   identity was read from the *last* `X-Forwarded-For` hop on the theory that our
   edge writes it. That holds only when an edge exists: with nothing in front,

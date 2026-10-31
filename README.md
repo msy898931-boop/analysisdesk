@@ -151,6 +151,7 @@ export ANALYSIS_MODELS="openai/gpt-oss-120b,qwen/qwen3.8-27b"   # اختياري
 export RATE_LIMIT_PER_MIN=60         # اختياري — طلبات لكل IP بالدقيقة
 export DESK_TRUST_PROXY=1            # بس إذا في proxy بتحكمو بيضيف آخر hop
 export DESK_API_KEY=...              # اختياري — مفتاح إلزامي على كل طلب
+export ALERTS_TOKEN=...              # اختياري — سرّ خدمة لـ/api/alerts* (بلاها 503)
 ```
 
 ---
@@ -166,9 +167,9 @@ export DESK_API_KEY=...              # اختياري — مفتاح إلزام�
 | `GET /api/analyze?symbol=EURUSD=X&interval=1h&lang=ar` | التحليل الكامل |
 | `GET /api/backtest?symbol=EURUSD=X&interval=1h&step=5` | سجلّ المحرّك على بيانات تاريخية (مشي أمامي، بلا نظرة للمستقبل) |
 | `GET /api/news` | عناوين حديثة من مصادر RSS عامة بلا مفاتيح |
-| `GET /api/alerts?chat_id=…` | التنبيهات المسلَّحة لحساب معيّن |
-| `POST /api/alerts?chat_id=…&symbol=…&price=…&direction=BUY` | تسليح تنبيه عند عبور مستوى |
-| `DELETE /api/alerts/{id}?chat_id=…` | حذف تنبيه يملكه صاحبه |
+| `GET /api/alerts?chat_id=…` | التنبيهات المسلَّحة لحساب معيّن (بدها `x-alerts-token`) |
+| `POST /api/alerts?chat_id=…&symbol=…&price=…&direction=BUY` | تسليح تنبيه عند عبور مستوى (بدها `x-alerts-token`) |
+| `DELETE /api/alerts/{id}?chat_id=…` | حذف تنبيه يملكه صاحبه (بدها `x-alerts-token`) |
 | `GET /api/candles?symbol=BTC-USD&interval=1d` | شموع للرسم |
 
 مثال:
@@ -192,6 +193,13 @@ fail-closed. عملياً: خلّي `DESK_API_KEY` فاضي إذا بدك الص
 (هاي حالة الإنتاج)، وانضبطه بس لما الـ API للاستخدام البرمجي. بلا
 `DESK_API_KEY` الـ API مفتوح لكن محدود. الحد لكل عملية على حدة (بالذاكرة)، يعني
 إعادة التشغيل بتصفّره — هاد مذكور صراحةً، مو مخبّى.
+
+و`/api/alerts*` إلها بوّابة تانية: **سرّ خدمة** (`ALERTS_TOKEN`، بينبعت
+`x-alerts-token`). هي خدمة-لخدمة — البوت هو العميل الوحيد، والصفحة المرفقة ما
+بتلمسها. الـ`chat_id` **معرّف مو سرّ** (بيتسرّب عبر مجموعات تيليجرام والرسائل
+المُعاد توجيهها)، فما بيصلح يكون المصادقة الوحيدة؛ هو بس بيختار الصفوف.
+بلا `ALERTS_TOKEN`، الـendpoints بترجّع **503 (مقفلة)** — مو مفتوحة. `/api/status`
+بيقول `alerts_configured` حتى يفرّق العميل بين «مقفلة» و«توكن غلط» بلا تخمين.
 
 ---
 

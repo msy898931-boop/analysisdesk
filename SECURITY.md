@@ -59,6 +59,11 @@ of them is missing should say which and where.
   passes `--no-proxy-headers` so uvicorn cannot rewrite that peer from the same
   header. Reading the header untrusted let one caller mint a fresh identity per
   request and step around the limit entirely.
+- **The alerts API is gated by a service token, not by the chat id.** A chat id
+  is an identifier, not a secret, so `/api/alerts*` requires `x-alerts-token`
+  matching `ALERTS_TOKEN`. With no token set the endpoints answer `503` (closed);
+  they never serve an unauthenticated caller. The chat id still scopes the rows,
+  so a token-holder can only reach the alerts it names.
 - **Error handling that does not leak.** Unhandled exceptions are logged
   server-side with secrets redacted and answered to the caller as a bare
   `internal error` with a request id.
