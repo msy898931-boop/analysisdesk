@@ -185,3 +185,19 @@ test("a read without a ladder renders no ladder section", async () => {
   await new Promise(r => setTimeout(r, 0));
   assert.doesNotMatch(els.out.innerHTML, /الأهداف الستة/);
 });
+
+test("the header links to the pitch with a plain anchor", async () => {
+  // The pitch is served at /pitch on the same origin. The link must be a plain
+  // <a href> -- an inline handler would break the desk's script-src 'self'
+  // policy, the same reason app.js is an external module.
+  const html = await readFile(join(here, "index.html"), "utf8");
+  assert.match(html, /<a[^>]+id="pitch"[^>]+href="\/pitch"/);
+  assert.doesNotMatch(html, /onclick=/);
+});
+
+test("the pitch label follows the language switch", async () => {
+  const { els, win } = await boot();
+  assert.equal(els.pitch.textContent, "العرض", "Arabic label at boot");
+  win.document.getElementById("l-en").onclick();
+  assert.equal(els.pitch.textContent, "Pitch", "label follows the switch");
+});

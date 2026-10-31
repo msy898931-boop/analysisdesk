@@ -3,7 +3,7 @@
 import { esc, fmt, basisPct, signedPct } from "./lib.js";
 
 const T = {
-  ar:{title:"AnalysisDesk",tagline:"تحليل فني شفّاف على بيانات سوق حقيقية",go:"تحليل",
+  ar:{title:"AnalysisDesk",tagline:"تحليل فني شفّاف على بيانات سوق حقيقية",go:"تحليل",pitch:"العرض",
       reading:"قراءة السوق",agreement:"توافق المؤشرات",entry:"الدخول",sl:"وقف الخسارة",
       tp:"الهدف",rr:"مخاطرة/عائد",support:"الدعم",resistance:"المقاومة",atr:"التقلب (ATR)",
       rsi:"مؤشر القوة RSI",macd:"MACD",stoch:"ستوكاستيك",bands:"بولنجر",
@@ -19,7 +19,7 @@ const T = {
       anchor:"الإرساء على السبوت",anchor_na:"غير مُرسّى",
       targets:"الأهداف الستة (خروج تدريجي)",tp_short:"هدف",src:"المصدر",
       lvl:"مستوى ارتكاز",proj:"امتداد تقلّب"},
-  en:{title:"AnalysisDesk",tagline:"Transparent technical analysis on real market data",go:"Analyze",
+  en:{title:"AnalysisDesk",tagline:"Transparent technical analysis on real market data",go:"Analyze",pitch:"Pitch",
       reading:"Market read",agreement:"Indicator agreement",entry:"Entry",sl:"Stop loss",
       tp:"Target",rr:"Risk/Reward",support:"Support",resistance:"Resistance",atr:"Volatility (ATR)",
       rsi:"RSI",macd:"MACD",stoch:"Stochastic",bands:"Bollinger",
@@ -47,6 +47,7 @@ let LANG="ar", SYMS=[], IVS={}, BUSY=false;
 // one removes the whole class of bug rather than the single symptom.
 const $ = id => document.getElementById(id);
 const title=$("title"), tagline=$("tagline"), go=$("go"), status=$("status"),
+      pitch=$("pitch"),
       sym=$("sym"), iv=$("iv"), out=$("out"), footline=$("footline"), disc=$("disc");
 
 function setLang(l){
@@ -60,6 +61,7 @@ function setLang(l){
   const t=T[l];
   title.textContent=t.title; tagline.textContent=t.tagline;
   go.textContent=t.go; footline.textContent=t.foot; disc.textContent=t.disc;
+  pitch.textContent=t.pitch;
   renderChips();
   if(last) paint(last);
 }
