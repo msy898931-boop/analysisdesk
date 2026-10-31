@@ -127,6 +127,18 @@ code makes should be a claim the code can back.
 
 ### Security
 
+- **The rate limit was bypassable by a forged `X-Forwarded-For`.** The client
+  identity was read from the *last* `X-Forwarded-For` hop on the theory that our
+  edge writes it. That holds only when an edge exists: with nothing in front,
+  the last hop is whatever the caller sent, so one script sent a fresh value per
+  request, got a fresh bucket each time, and walked straight past the limit
+  (reproduced: four spoofed requests, four `200`s against a limit of two). The
+  header is now read **only** when `DESK_TRUST_PROXY` is set — which the Render
+  blueprint does, because Render's router genuinely appends the real client as
+  the last hop (verified in production: fifteen forged values collapsed to one
+  bucket). Unset, the identity is the socket peer. The run command also passes
+  `--no-proxy-headers`, because uvicorn otherwise rewrites that peer from the
+  same header, which would have left the fallback forgeable too.
 - **The API key was bypassable by a forged header.** With `DESK_API_KEY` set,
   the guard exempted any request carrying `Sec-Fetch-Site: same-origin`, on the
   reasoning that a browser writes that header and page script cannot. True of a

@@ -38,7 +38,7 @@ audit:  ## Audit the lock the image installs
 check: lint types security test ui  ## Everything CI runs
 
 run:  ## Serve locally on http://127.0.0.1:12000
-	$(PY) -m uvicorn app.main:app --host 127.0.0.1 --port 12000
+	$(PY) -m uvicorn app.main:app --host 127.0.0.1 --port 12000 --no-proxy-headers
 
 docker:  ## Build the image and prove it becomes healthy as a non-root user
 	docker build -t analysisdesk:local .

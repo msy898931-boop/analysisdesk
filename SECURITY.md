@@ -51,6 +51,14 @@ of them is missing should say which and where.
   same-origin exemption: a page-script check such as `Sec-Fetch-Site` is set by
   the browser but is equally settable by any script, so trusting it was a bypass
   rather than a credential. The gate fails closed.
+- **The rate-limit identity is the socket peer, not a header.** `X-Forwarded-For`
+  is caller-controlled, so it is read only when `DESK_TRUST_PROXY` says a proxy
+  we control is in front (Render's router appends the real client as the last
+  hop; the blueprint sets it). Off — the default, and any deployment with
+  nothing in front — the header is ignored and the peer is used. The run command
+  passes `--no-proxy-headers` so uvicorn cannot rewrite that peer from the same
+  header. Reading the header untrusted let one caller mint a fresh identity per
+  request and step around the limit entirely.
 - **Error handling that does not leak.** Unhandled exceptions are logged
   server-side with secrets redacted and answered to the caller as a bare
   `internal error` with a request id.

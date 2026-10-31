@@ -163,16 +163,31 @@ API_KEY = os.getenv("DESK_API_KEY", "").strip()
 _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
+# Trust for X-Forwarded-For, off by default. A header the caller sets is not an
+# identity: trusted blindly, one caller mints a fresh value per request and
+# walks past the limit. Turn it on only when a proxy you control sits in front
+# and appends the real client as the last hop (Render does; the blueprint sets
+# this). Off, the identity is the socket peer -- and the run command passes
+# --no-proxy-headers so uvicorn cannot rewrite that peer from the same header.
+TRUST_PROXY = os.getenv("DESK_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _client_ip(request: Request) -> str:
-    # Take the LAST forwarded hop, not the first. Each proxy appends the address
-    # it saw, so the last entry is the one our own edge (Render) wrote and the
-    # caller cannot forge it. The first entry is whatever the caller sent -- a
-    # script could put a fresh value there on every request and walk straight
-    # past the limit, which is the whole point of the limit.
-    fwd = request.headers.get("x-forwarded-for", "")
-    hops = [h.strip() for h in fwd.split(",") if h.strip()]
-    if hops:
-        return hops[-1]
+    """The caller's identity for the rate limit.
+
+    Read from the last X-Forwarded-For hop only when `DESK_TRUST_PROXY` says a
+    proxy we control is in front and wrote that hop. Untrusted, the header is
+    whatever the caller sent, so it is ignored and the socket peer is used
+    instead. Reading it untrusted was the bug: a script sent a new value per
+    request, got a new bucket each time, and stepped around the limit entirely.
+    The last hop is right *behind a proxy* because each proxy appends the
+    address it saw; it is wrong with nothing in front, which is the case the
+    default now covers.
+    """
+    if TRUST_PROXY:
+        hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+        if hops:
+            return hops[-1]
     return request.client.host if request.client else "unknown"
 
 
