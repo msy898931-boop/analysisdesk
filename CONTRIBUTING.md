@@ -68,6 +68,24 @@ uv pip compile requirements.txt --python-version 3.11 \
 python scripts/check_lock.py        # must pass before you push
 ```
 
+### The base image is pinned by digest
+
+`Dockerfile`'s `FROM` names the base by tag **and** digest, so a rebuild months
+from now pulls the exact bytes CI tested rather than whatever `python:3.12-slim`
+has drifted to. To bump it, resolve the digest for the multi-arch index (not a
+single platform's manifest, or the amd64 build on Render and the arm64 runner
+would resolve differently) and replace the `sha256:` on the `FROM` line:
+
+```bash
+docker buildx imagetools inspect python:3.12-slim --format '{{.Manifest.Digest}}'
+```
+
+Then rebuild the image and confirm it still becomes healthy as a non-root user:
+
+```bash
+docker build -t analysisdesk:local . && make docker
+```
+
 ## Style
 
 `ruff` decides formatting and most style (line length 110, py311+). The ignores

@@ -1,4 +1,8 @@
-FROM python:3.12-slim
+# Pinned by digest, not just tag: `python:3.12-slim` is a moving target, so a
+# rebuild months from now would pull a different base than the one CI tested.
+# The digest is the multi-arch index, so the amd64 build on Render and the CI
+# runner resolve to the same bytes. Bump it deliberately (see CONTRIBUTING).
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -18,6 +22,11 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY app ./app
 COPY web ./web
+
+# The version lives in pyproject.toml and nowhere else, so the image carries that
+# one file for /api/status to read. It is the same source the metadata is built
+# from, so there is no second copy to drift.
+COPY pyproject.toml .
 
 # Run as an unprivileged user. The service only reads its own code and serves
 # HTTP, so it has no reason to be root; if the process is ever compromised, the

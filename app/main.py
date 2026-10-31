@@ -21,7 +21,10 @@ from __future__ import annotations
 import itertools
 import os
 import time
+import tomllib
 from collections import defaultdict, deque
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,11 +32,45 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, alerts, backtest, errors, indicators, market, news, signals, store
+from . import ai, alerts, backtest, errors, indicators, market, news, schemas, signals, store
 
 load_dotenv()
 
-app = FastAPI(title="AnalysisDesk", version="1.1.0")
+
+def _version() -> str:
+    """The one place the version is written is pyproject.toml.
+
+    It used to be typed here as well, so `status.version` and the packaged
+    version could disagree with nothing to catch it -- the same two-copies-of-
+    one-fact failure this project keeps removing. Prefer the installed metadata;
+    when the package is not installed (the container copies the code but does
+    not build a wheel), read the same pyproject.toml the metadata was built
+    from. Both paths lead to one file, so there is still a single source.
+    """
+    try:
+        return _dist_version("analysisdesk")
+    except PackageNotFoundError:
+        pass
+    try:
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        return tomllib.loads(pyproject.read_text("utf-8"))["project"]["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return "0.0.0+unknown"
+
+
+# The interactive docs pages are off, and that is deliberate. The default
+# Swagger and ReDoc pages load their JavaScript from a CDN, which our own
+# `script-src 'self'` policy blocks -- so they answered 200 as an empty shell, an
+# all-clear over a page that never worked. A surface that cannot run is not
+# served. The machine-readable schema at /openapi.json is kept: it is plain JSON,
+# no CDN, no CSP carve-out, and it is what a client generates code from. The API
+# is also described in prose in README.md.
+app = FastAPI(
+    title="AnalysisDesk",
+    version=_version(),
+    docs_url=None,
+    redoc_url=None,
+)
 
 # Open the durable store once at import. Failure is not fatal: the desk serves
 # reads from memory either way, and /api/status reports the store as unavailable
@@ -178,6 +215,27 @@ async def guard(request: Request) -> None:
                             headers={"Retry-After": "60"})
 
 
+# The one failure a user actually reads in the card is a market read that could
+# not complete. It used to be Arabic whatever language was asked for, so an
+# English reader got a foreign sentence under an English heading -- the opposite
+# of the bilingual rule every other string follows. It now follows `lang`.
+_MARKET_ERR = {
+    "ar": "تعذّر قراءة بيانات السوق",
+    "en": "could not read market data",
+}
+
+
+def _market_error(lang: str, exc: object) -> str:
+    return f"{_MARKET_ERR.get(lang, _MARKET_ERR['en'])}: {exc}"
+
+
+# A symbol reaches a URL template, so the check lives at that boundary in
+# market.py, where every caller is covered -- not only this API. The API refuses
+# a bad symbol early, before it costs a rate-limit token; the market layer
+# refuses it again, before it can become a path. One predicate, one source.
+_valid_symbol = market.valid_symbol
+
+
 WATCHLIST = [
     {"symbol": "EURUSD=X", "name_ar": "يورو/دولار", "name_en": "EUR/USD", "class": "forex"},
     {"symbol": "GBPUSD=X", "name_ar": "جنيه/دولار", "name_en": "GBP/USD", "class": "forex"},
@@ -201,12 +259,12 @@ INTERVALS = {
 }
 
 
-@app.get("/api/health")
+@app.get("/api/health", response_model=schemas.HealthOut)
 async def health():
     return {"status": "ok", "model": ai.MODEL, "model_key": bool(os.getenv("GROQ_API_KEY"))}
 
 
-@app.get("/api/status")
+@app.get("/api/status", response_model=schemas.StatusOut)
 async def status():
     """Diagnostics: what this process is actually doing, not just that it is up.
 
@@ -246,12 +304,12 @@ async def status():
     }
 
 
-@app.get("/api/symbols")
+@app.get("/api/symbols", response_model=schemas.SymbolsOut)
 async def symbols():
     return {"symbols": WATCHLIST, "intervals": INTERVALS}
 
 
-@app.get("/api/analyze")
+@app.get("/api/analyze", response_model=schemas.AnalyzeOut, response_model_exclude_unset=True)
 async def analyze(
     request: Request,
     symbol: str = Query(..., description="Yahoo Finance symbol, e.g. EURUSD=X"),
@@ -262,6 +320,8 @@ async def analyze(
         raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
     if lang not in ("ar", "en"):
         raise HTTPException(400, "lang must be ar or en")
+    if not _valid_symbol(symbol):
+        raise HTTPException(400, "unsupported symbol; use a Yahoo Finance symbol, e.g. EURUSD=X")
     # Charge the quota only for a request we would actually serve: a bad
     # parameter is free, so a typo cannot lock a user out for a minute.
     await guard(request)
@@ -270,7 +330,7 @@ async def analyze(
         series = await market.fetch_series(symbol, interval)
     except market.MarketDataError as exc:
         # Fail loudly. A silent all-clear is the one thing we never emit.
-        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
+        raise HTTPException(502, _market_error(lang, exc)) from exc
 
     # Provenance. A bare "Gold" number is ambiguous: the COMEX contract and spot
     # XAU/USD differ by a basis, so we name the instrument and, when we are on a
@@ -347,12 +407,13 @@ async def analyze(
     }
 
 
-@app.get("/api/backtest")
+@app.get("/api/backtest", response_model=schemas.BacktestOut)
 async def backtest_endpoint(
     request: Request,
     symbol: str = Query(..., description="Yahoo Finance symbol, e.g. EURUSD=X"),
     interval: str = Query("1h"),
     step: int = Query(1, ge=1, le=50, description="score a signal every `step` bars"),
+    lang: str = Query("ar"),
 ):
     """Walk the signal engine forward over the real candles and report its record.
 
@@ -362,18 +423,22 @@ async def backtest_endpoint(
     """
     if interval not in market.INTERVALS:
         raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
+    if lang not in ("ar", "en"):
+        raise HTTPException(400, "lang must be ar or en")
+    if not _valid_symbol(symbol):
+        raise HTTPException(400, "unsupported symbol; use a Yahoo Finance symbol, e.g. EURUSD=X")
     await guard(request)
     try:
         series = await market.fetch_series(symbol, interval)
     except market.MarketDataError as exc:
-        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
+        raise HTTPException(502, _market_error(lang, exc)) from exc
     result = backtest.run(series, step=step)
     d = result.as_dict()
     d["caveats_ar"] = backtest.CAVEATS_AR
     return d
 
 
-@app.get("/api/alerts")
+@app.get("/api/alerts", response_model=schemas.AlertsOut)
 async def list_alerts(request: Request, chat_id: str = Query(...)):
     """List a chat's armed alerts. Scoped to the caller's chat id, nothing else."""
     await guard(request)
@@ -398,6 +463,8 @@ async def create_alert(  # noqa: PLR0913, PLR0917 - query params, not a call sit
         raise HTTPException(400, "direction must be BUY or SELL")
     if price <= 0:
         raise HTTPException(400, "price must be positive")
+    if not _valid_symbol(symbol):
+        raise HTTPException(400, "unsupported symbol; use a Yahoo Finance symbol, e.g. EURUSD=X")
     await guard(request)
     sid = store.add_subscription(chat_id, symbol, interval, direction, price)
     if sid is None:
@@ -415,7 +482,7 @@ async def delete_alert(request: Request, alert_id: int, chat_id: str = Query(...
     return {"removed": alert_id}
 
 
-@app.get("/api/news")
+@app.get("/api/news", response_model=schemas.NewsOut)
 async def news_endpoint(request: Request, limit: int = Query(12, ge=1, le=40)):
     """Keyless headlines beside the read. Titles only, and the feed health is
     reported per source so a silent feed is visible as a failure, not an empty
@@ -425,15 +492,17 @@ async def news_endpoint(request: Request, limit: int = Query(12, ge=1, le=40)):
     return result.as_dict()
 
 
-@app.get("/api/candles")
-async def candles(request: Request, symbol: str, interval: str = "1h"):
+@app.get("/api/candles", response_model=schemas.CandlesOut)
+async def candles(request: Request, symbol: str, interval: str = "1h", lang: str = Query("ar")):
     if interval not in market.INTERVALS:
         raise HTTPException(400, f"unsupported interval; use one of {list(market.INTERVALS)}")
+    if not _valid_symbol(symbol):
+        raise HTTPException(400, "unsupported symbol; use a Yahoo Finance symbol, e.g. EURUSD=X")
     await guard(request)
     try:
         series = await market.fetch_series(symbol, interval)
     except market.MarketDataError as exc:
-        raise HTTPException(502, f"تعذّر قراءة بيانات السوق: {exc}") from exc
+        raise HTTPException(502, _market_error(lang, exc)) from exc
     # Same rescale as /api/analyze: the chart must sit on the broker's scale, or
     # it would draw the token's prices under a card that shows spot.
     if series.instrument_type == "SPOT":
@@ -461,6 +530,15 @@ app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 async def index():
     store.bump("visits")
     return FileResponse(str(WEB / "index.html"))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    # Browsers ask for /favicon.ico by default even when the page declares an SVG
+    # icon, and a 404 there is a broken icon on every visit. Serve the SVG for
+    # both paths so the tab always has a mark. Served from the same origin, so it
+    # stays inside `img-src 'self'`.
+    return FileResponse(str(WEB / "favicon.svg"), media_type="image/svg+xml")
 
 
 @app.get("/pitch")

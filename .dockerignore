@@ -15,3 +15,11 @@ render.yaml
 Dockerfile
 .dockerignore
 *.log
+
+# The SQLite store is local runtime state and must never enter the image. The
+# Dockerfile copies named paths, so it would not be picked up anyway; excluding
+# it here means a future `COPY . .` cannot quietly bake it in.
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

@@ -1,0 +1,17 @@
+AnalysisDesk
+Copyright (c) 2026 AnalysisDesk
+
+This product is licensed under the MIT License (see LICENSE).
+
+Third-party market data
+-----------------------
+The market data shown by this software is retrieved at runtime from public
+third-party sources (Yahoo Finance, Kraken, Coinbase, Swissquote, gold-api) and
+public RSS feeds. It is not redistributed with this repository, and each
+source's own terms of use apply to its use.
+
+Not investment advice
+---------------------
+This software produces automated technical analysis. It is not investment
+advice, and it makes no guarantee of any outcome. Indicator agreement is a
+measure of agreement between rules, not a probability of profit.

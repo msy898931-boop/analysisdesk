@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AnalysisDesk">
+  <rect width="64" height="64" rx="14" fill="#0a0e13"/>
+  <rect x="4" y="4" width="56" height="56" rx="11" fill="none" stroke="#1e2a38"/>
+  <!-- The desk mark: a diamond (◈) in the brand teal, plus a small uptrend line. -->
+  <path d="M32 12 L50 32 L32 52 L14 32 Z" fill="none" stroke="#00d4aa" stroke-width="3.5"
+        stroke-linejoin="round"/>
+  <path d="M22 38 L29 31 L34 35 L43 26" fill="none" stroke="#e3b341" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
