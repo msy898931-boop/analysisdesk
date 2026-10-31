@@ -1321,6 +1321,40 @@ def test_fetch_series_rejects_an_unknown_interval():
         assert "7s" in str(exc)
 
 
+def test_the_market_layer_refuses_a_path_walking_symbol_before_building_a_url(monkeypatch):
+    """The symbol becomes a path segment, so this is the boundary that matters.
+
+    CodeQL flagged the URL build as a partial SSRF: the symbol reached
+    `YAHOO.format(...)` with only the API validating it, and `fetch_series` has
+    other callers (alerts.py, the scripts). The refusal now lives here, before a
+    request is built, so no caller can route a `..` into the upstream path.
+    """
+    import asyncio
+
+    fake = _Client()
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    for bad in ("../../etc/passwd", "a/../b", "..", ".", "a..b", "a/b", "has space", "x" * 21, "sym;drop"):
+        try:
+            asyncio.run(market.fetch_series(bad, "1h"))
+            raise AssertionError(f"{bad!r} should be refused")
+        except market.MarketDataError:
+            pass
+    assert not fake.calls, "no request may be built for a refused symbol"
+
+
+def test_a_real_symbol_is_percent_encoded_into_the_path(monkeypatch):
+    """A valid symbol keeps working, and its punctuation is encoded, not raw."""
+    import asyncio
+
+    fake = _Client(_Resp(200, _yahoo_payload(120)))
+    monkeypatch.setattr(market.httpx, "AsyncClient", lambda **k: fake)
+    market._cache.clear()
+    asyncio.run(market.fetch_series("^GSPC", "1h"))
+    assert fake.calls, "the request should have been attempted"
+    url = fake.calls[0][0]
+    assert "%5EGSPC" in url, f"the symbol was not encoded into the path: {url}"
+
+
 def test_fetch_series_parses_a_yahoo_payload(monkeypatch):
     import asyncio
 
@@ -3387,7 +3421,7 @@ def test_an_unusable_symbol_is_refused_before_it_reaches_upstream(monkeypatch):
     monkeypatch.setattr(main.market, "fetch_series", spy)
     main._hits.clear()
     c = TestClient(main.app)
-    for bad in ("../../../etc/passwd", "has space", "a/b", "x" * 21, "sym;drop"):
+    for bad in ("../../../etc/passwd", "..", "a..b", "has space", "a/b", "x" * 21, "sym;drop"):
         r = c.get("/api/analyze", params={"symbol": bad, "interval": "1h"})
         assert r.status_code == 400, f"{bad!r} should be rejected"
     assert not called, "a rejected symbol must not cost an upstream call"
@@ -3497,12 +3531,12 @@ def test_the_version_falls_back_to_pyproject_when_uninstalled(monkeypatch):
     metadata is absent there. The version must still resolve -- from the same
     pyproject.toml the metadata would have been built from -- rather than
     degrade to a placeholder on the deployed image."""
-    import importlib.metadata as md
+    from importlib.metadata import PackageNotFoundError
 
     from app import main
 
     def missing(_name):
-        raise md.PackageNotFoundError("analysisdesk")
+        raise PackageNotFoundError("analysisdesk")
 
     monkeypatch.setattr(main, "_dist_version", missing)
     assert main._version() == "1.1.0"

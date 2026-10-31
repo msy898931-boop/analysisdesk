@@ -8,14 +8,29 @@ inventing a value.
 from __future__ import annotations
 
 import datetime
+import re
 import time
 from dataclasses import dataclass, replace
+from urllib.parse import quote as _urlquote
 
 import httpx
 import pandas as pd
 
 YAHOO = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 UA = "Mozilla/5.0 (compatible; AnalysisDesk/1.0)"
+
+# A symbol becomes a path segment in the upstream URL, so this is a security
+# boundary, not a nicety. The pattern is anchored and refuses a `..` sequence or
+# a dots-only value, so a symbol cannot walk the path; everything outside the
+# allowlist is refused here, before a request is built. Yahoo symbols are
+# letters, digits and a few punctuation marks: `.` class shares (BRK.B), `^`
+# indices (^GSPC), `=` FX pairs (EURUSD=X), `-` crypto (BTC-USD).
+SYMBOL_RE = re.compile(r"^(?!\.+$)(?!.*\.\.)[A-Za-z0-9.^=_-]{1,20}$")
+
+
+def valid_symbol(symbol: str) -> bool:
+    return bool(SYMBOL_RE.match(symbol))
+
 
 # interval -> how far back to request, and how long the payload stays warm
 INTERVALS: dict[str, tuple[str, int]] = {
@@ -99,6 +114,12 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
     if interval not in INTERVALS:
         raise MarketDataError(f"unsupported interval: {interval}")
 
+    # Validate before the cache lookup: an invalid symbol must never be treated
+    # as a cache key or reach the URL builder. This is the boundary that keeps a
+    # caller other than the API (a script, alerts.py) safe too.
+    if not valid_symbol(symbol):
+        raise MarketDataError(f"unsupported symbol: {symbol!r}")
+
     # The cache wraps both venues. It used to sit below the spot branch, so spot
     # gold -- the instrument this desk exists for -- was the one series that
     # never cached, and every read paid for a fresh Kraken plus Coinbase call.
@@ -115,7 +136,10 @@ async def fetch_series(symbol: str, interval: str = "1h", *, fresh: bool = False
         return series
 
     rng = INTERVALS[interval][0]
-    url = YAHOO.format(symbol=symbol)
+    # Percent-encode the segment. The validator already confines it to safe
+    # characters, but encoding means the URL cannot be changed by a future
+    # widening of the pattern without this call being revisited.
+    url = YAHOO.format(symbol=_urlquote(symbol, safe=""))
     params = {"range": rng, "interval": interval, "includePrePost": "false"}
 
     async with httpx.AsyncClient(timeout=20, headers={"User-Agent": UA}) as client:

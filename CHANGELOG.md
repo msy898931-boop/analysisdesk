@@ -25,9 +25,13 @@ code makes should be a claim the code can back.
 - **Error strings ignored the language they were asked for.** A read failure
   came back in one language regardless of `lang`. There is one translation
   helper now, applied to every error the API returns.
-- **An unvalidated symbol reached the upstream URL.** `_valid_symbol` rejects
-  anything that is not a Yahoo-shaped symbol before any fetch, so a space or a
-  `..` cannot cost a wasted call or come back echoed in a message.
+- **An unvalidated symbol could reach the upstream URL path (partial SSRF).**
+  The check lived only in the API layer, but `fetch_series` has other callers
+  (`alerts.py`, the scripts), and the pattern did not refuse a `..` — so a symbol
+  could walk the upstream path. The check moved to the URL boundary in
+  `market.py` (one predicate, every caller), now rejects `..`, and the segment is
+  percent-encoded before it is inserted. CodeQL flagged the original as "partial
+  SSRF" and now passes; two tests pin the refusal and the encoding.
 - **The MIT LICENSE was not detected by GitHub.** It carried a market-data
   disclaimer that made it "Other". The license is now standard MIT and the
   disclaimer moved to `NOTICE`, where it belongs.

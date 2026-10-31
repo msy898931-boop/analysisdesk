@@ -50,9 +50,15 @@ of them is missing should say which and where.
 - **Error handling that does not leak.** Unhandled exceptions are logged
   server-side with secrets redacted and answered to the caller as a bare
   `internal error` with a request id.
-- **No `eval`, no shell from request data, no SSRF.** Symbols are validated
-  against a strict pattern before they reach any upstream URL, and upstream
-  hosts are fixed.
+- **No `eval`, no shell from request data, no server-side request forgery.**
+  A symbol becomes a path segment of an upstream URL, so it is validated against
+  a strict anchored pattern (`^[A-Za-z0-9.^=_-]{1,20}$`, refusing any `..`) and
+  percent-encoded at the point the URL is built — in `market.py`, where every
+  caller (the API, `alerts.py`, the scripts) is covered, not only at the HTTP
+  edge. Upstream hosts are fixed constants, never derived from input. This was a
+  real CodeQL finding ("partial SSRF") on the first version of this pass: the
+  check lived only in the API layer, so `fetch_series` had callers that could
+  route a `..` into the path. It is fixed and pinned by tests.
 
 ## Supported versions
 

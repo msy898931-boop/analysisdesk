@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import itertools
 import os
-import re
 import time
 import tomllib
 from collections import defaultdict, deque
@@ -230,17 +229,11 @@ def _market_error(lang: str, exc: object) -> str:
     return f"{_MARKET_ERR.get(lang, _MARKET_ERR['en'])}: {exc}"
 
 
-# A symbol reaches a URL template. Yahoo symbols are letters, digits and a few
-# punctuation marks (`.` class shares, `^` indices, `=` FX pairs, `-` crypto);
-# anything else -- a slash, a space, a dot-dot -- is a typo or an attempt to walk
-# the path, and is refused here instead of being forwarded upstream to cost a
-# request and come back echoed. This is validation, not an allow-list: the desk
-# accepts any well-formed Yahoo symbol, not only the watchlist.
-_SYMBOL_RE = re.compile(r"^[A-Za-z0-9.^=_-]{1,20}$")
-
-
-def _valid_symbol(symbol: str) -> bool:
-    return bool(_SYMBOL_RE.match(symbol))
+# A symbol reaches a URL template, so the check lives at that boundary in
+# market.py, where every caller is covered -- not only this API. The API refuses
+# a bad symbol early, before it costs a rate-limit token; the market layer
+# refuses it again, before it can become a path. One predicate, one source.
+_valid_symbol = market.valid_symbol
 
 
 WATCHLIST = [
