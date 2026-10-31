@@ -21,6 +21,18 @@
     min-height:100vh}
   .wrap{max-width:1080px;margin:0 auto;padding:28px 22px 90px}
 
+  /* The language switch is two radios and a rule. No script runs on this page,
+     so it stays inside the app's script-src 'self' policy, the same rule the
+     desk's own page follows. */
+  .langradio{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+  #lang-ar:checked ~ .wrap .en{display:none}
+  #lang-en:checked ~ .wrap .ar{display:none}
+  #lang-en:checked ~ .wrap{direction:ltr}
+  #lang-ar:checked ~ .wrap .lang label[for="lang-ar"],
+  #lang-en:checked ~ .wrap .lang label[for="lang-en"]{background:var(--teal);color:#04120f}
+  #lang-ar:focus-visible ~ .wrap .lang label[for="lang-ar"],
+  #lang-en:focus-visible ~ .wrap .lang label[for="lang-en"]{outline:2px solid rgba(0,212,170,.5)}
+
   /* ---- top bar ---- */
   .bar{display:flex;align-items:center;justify-content:space-between;gap:16px;
     flex-wrap:wrap;margin-bottom:26px;position:sticky;top:0;z-index:9;
@@ -33,9 +45,8 @@
   .brand p{margin:2px 0 0;font-size:12px;color:var(--dim)}
   .lang{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);
     border-radius:12px;padding:4px}
-  .lang button{background:none;border:0;color:var(--dim);padding:8px 15px;border-radius:9px;
-    cursor:pointer;font-size:13px;font-weight:600}
-  .lang button.on{background:var(--teal);color:#04120f}
+  .lang label{color:var(--dim);padding:8px 15px;border-radius:9px;
+    cursor:pointer;font-size:13px;font-weight:600;user-select:none}
 
   /* ---- slides ---- */
   .slide{background:linear-gradient(180deg,var(--panel),var(--panel2));
@@ -53,7 +64,6 @@
   /* ---- hero ---- */
   .hero{padding:46px 34px}
   .hero .motto{font-size:20px;font-weight:800;color:var(--teal);margin:6px 0 0}
-  .hero .sub{font-size:14px;color:var(--dim);margin-top:8px}
   .pills{display:flex;gap:9px;flex-wrap:wrap;margin-top:20px}
   .pill{font-size:12.5px;background:#0d141c;border:1px solid var(--line);
     border-radius:20px;padding:7px 14px;color:#c3cfdb}
@@ -105,14 +115,13 @@
 
   footer{text-align:center;color:var(--dim);font-size:12px;line-height:1.9;margin-top:34px}
   footer .rule{border-top:1px solid var(--line);margin:18px auto;max-width:520px}
-
-  /* ---- language visibility ---- */
-  html[lang="ar"] .en{display:none}
-  html[lang="en"] .ar{display:none}
-  html[lang="en"] body,html[lang="en"]{direction:ltr}
 </style>
 </head>
 <body>
+
+<input type="radio" name="lang" id="lang-ar" class="langradio" checked>
+<input type="radio" name="lang" id="lang-en" class="langradio">
+
 <div class="wrap">
 
   <div class="bar">
@@ -125,8 +134,8 @@
       </div>
     </div>
     <div class="lang">
-      <button id="btn-ar" class="on" onclick="setLang('ar')">عربي</button>
-      <button id="btn-en" onclick="setLang('en')">EN</button>
+      <label for="lang-ar">عربي</label>
+      <label for="lang-en">EN</label>
     </div>
   </div>
 
@@ -175,13 +184,13 @@
       from? and is it even for the instrument I actually trade?
     </p>
     <div class="note">
-      <b class="ar">مثال حقيقي.</b><span class="ar"> عرض النظام سعر الذهب من عقد COMEX
+      <span class="ar"><b>مثال حقيقي.</b> عرض النظام سعر الذهب من عقد COMEX
       الآجل (GC=F)، والمستخدم يتداول سبوت XAU/USD. الرقمان يختلفان، والمستخدم كان
       محقّاً. الخطأ لم يكن في الرقم، بل في <b>الاسم</b>: بطاقة تقول «الذهب» ولا
       تقول أيّ ذهب.</span>
-      <b class="en">A real example.</b><span class="en"> The desk showed gold from the
-      COMEX future (GC=F); the user trades spot XAU/USD. The two differ, and the user
-      was right. The bug was not the number — it was the <b>label</b>: a card that said
+      <span class="en"><b>A real example.</b> The desk showed gold from the COMEX
+      future (GC=F); the user trades spot XAU/USD. The two differ, and the user was
+      right. The bug was not the number — it was the <b>label</b>: a card that said
       "gold" without saying which gold.</span>
     </div>
   </section>
@@ -306,7 +315,7 @@
     <h2 class="ar">الـbacktest سجلّ، لا وعد — والسجل سلبي بصراحة.</h2>
     <h2 class="en">The backtest is a record, not a promise — and the record is negative.</h2>
     <div class="cards">
-      <div class="c"><div class="num neg ar">≈ −0.04R</div><div class="num neg en">≈ −0.04R</div>
+      <div class="c"><div class="num neg">≈ −0.04R</div>
         <small class="ar">التوقّع، EURUSD 1h (كل 10 شموع)</small>
         <small class="en">expectancy, EURUSD 1h (every 10th bar)</small></div>
       <div class="c"><div class="num"><span class="ar">مشي أمامي</span><span class="en">walk-forward</span></div>
@@ -438,19 +447,5 @@
   </footer>
 
 </div>
-
-<script>
-  function setLang(l){
-    document.documentElement.lang = l;
-    document.documentElement.dir  = (l === 'ar') ? 'rtl' : 'ltr';
-    document.getElementById('btn-ar').classList.toggle('on', l === 'ar');
-    document.getElementById('btn-en').classList.toggle('on', l === 'en');
-    try { localStorage.setItem('desk-pitch-lang', l); } catch (e) {}
-  }
-  try {
-    var saved = localStorage.getItem('desk-pitch-lang');
-    if (saved === 'en') setLang('en');
-  } catch (e) {}
-</script>
 </body>
 </html>

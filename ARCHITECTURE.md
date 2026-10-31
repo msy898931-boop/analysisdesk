@@ -109,6 +109,12 @@ because no model wrote it.
 the browser and `node --test` share one copy of the escaping and precision rules
 — the two defects that lived only in the browser before.
 
+`pitch.html` is the project pitch, served at `/pitch`. It is the same origin and
+the same policy as the desk: no script at all, so it needs no carve-out in
+`script-src 'self'`. The Arabic/English switch is two radio inputs and a CSS
+rule, not JavaScript — a page that carries no code cannot violate the policy
+that forbids inline code.
+
 ## Data flow for one request
 
 ```
