@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "analysisdesk"
-version = "1.1.0"
+version = "1.2.0"
 description = "Transparent technical analysis over real market data, with an AI layer that only explains."
 readme = "README.md"
 requires-python = ">=3.11"

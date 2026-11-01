@@ -388,12 +388,22 @@ def anchor_series_to_spot(series: Series, spot: dict | None) -> Series:
 # watching a broker's XAU/USD will see a different number, so we fetch the real
 # spot quote and show both rather than letting one stand in for the other.
 #
-# Primary source is Swissquote's public BBO feed: it is a real broker book and
-# matched the user's own screen to the dollar. The gold-api aggregate is the
-# fallback, so a single upstream outage degrades instead of failing.
+# Spot quote chain: biquote -> Swissquote -> gold-api. Swissquote is a real
+# broker book and matched the user's own screen to the dollar; the gold-api
+# aggregate is the last resort. Any single upstream outage degrades, never fails.
 SWISSQUOTE = "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/{metal}/USD"
 SPOT_URL = "https://api.gold-api.com/price/{metal}"
 SPOT_METALS = {"XAU", "XAG"}
+
+# biquote.io — a keyless MT5 broker feed. It is preferred for the spot quote
+# because it states its own honesty fields: `marketState`, `stale` and
+# `quoteAgeSeconds`. A closed market returns HTTP 200 with the last known price,
+# so the source tells us "this is not live" instead of leaving us to guess — the
+# same distinction this desk refuses to blur. Two fields are traps: `last` and
+# `volume` are ALWAYS 0 (broker CFD pricing has no consolidated tape), so the
+# price is `mid` and nothing is ever computed from `last`/`volume`.
+BIQUOTE = "https://biquote.io/api/{symbol}"
+BIQUOTE_SYMBOLS = {"XAU": "XAUUSD", "XAG": "XAGUSD"}
 
 
 def _round_price(value: float) -> float:
@@ -421,6 +431,30 @@ def _swissquote_mid(payload) -> float | None:
     return None
 
 
+def _biquote_quote(payload: dict) -> dict | None:
+    """Read a biquote tick into the desk's spot shape, honesty fields included.
+
+    `mid` is the price; `last` and `volume` are always 0 on this feed and are
+    ignored. The market's own verdict (`marketState`, `stale`, `quoteAgeSeconds`)
+    is carried through so a closed market reads as closed rather than as a live
+    price -- the whole reason this source is preferred.
+    """
+    if not isinstance(payload, dict):
+        return None
+    mid = payload.get("mid")
+    if not isinstance(mid, (int, float)) or mid <= 0:
+        return None
+    return {
+        "price": _round_price(float(mid)),
+        "bid": payload.get("bid"),
+        "ask": payload.get("ask"),
+        "quoted_at": payload.get("timestamp"),
+        "market_state": payload.get("marketState"),
+        "stale": payload.get("stale"),
+        "quote_age_s": payload.get("quoteAgeSeconds"),
+    }
+
+
 async def fetch_spot(metal: str) -> dict:
     metal = metal.upper()
     if metal not in SPOT_METALS:
@@ -428,6 +462,19 @@ async def fetch_spot(metal: str) -> dict:
 
     errors: list[str] = []
     async with httpx.AsyncClient(timeout=15, headers={"User-Agent": UA}) as client:
+        try:
+            sym = BIQUOTE_SYMBOLS.get(metal)
+            if sym:
+                r = await client.get(BIQUOTE.format(symbol=sym))
+                if r.status_code == 200:
+                    q = _biquote_quote(r.json())
+                    if q:
+                        return {"metal": metal, "name": metal, "source": "biquote (MT5)",
+                                "bid_ask": True, **q}
+                errors.append(f"biquote: HTTP {r.status_code}")
+        except (httpx.HTTPError, ValueError) as exc:
+            errors.append(f"biquote: {exc.__class__.__name__}")
+
         try:
             r = await client.get(SWISSQUOTE.format(metal=metal))
             if r.status_code == 200:

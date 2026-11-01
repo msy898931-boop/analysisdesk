@@ -164,6 +164,29 @@ test("the footer names the venue that actually supplied the candles", async () =
   assert.doesNotMatch(els.footline.textContent, /Yahoo/);
 });
 
+test("a closed market reads as closed, never as a live quote", async () => {
+  // biquote states the market's verdict on every tick. A Friday-evening price
+  // shown on Sunday as "live" is the exact claim this desk refuses; the card
+  // must name the closure instead.
+  const closed = { ...GOLD, spot: { metal: "XAU", price: 3875.53, source: "biquote (MT5)",
+                                    market_state: "closed", stale: true, quote_age_s: 130000 } };
+  const { els } = await boot({ read: closed });
+  els.go.onclick();
+  await new Promise(r => setTimeout(r, 0));
+  assert.match(els.out.innerHTML, /السوق مقفل/);
+  assert.match(els.out.innerHTML, /biquote \(MT5\)/);
+});
+
+test("an open, fresh quote carries no closure note", async () => {
+  const open = { ...GOLD, spot: { metal: "XAU", price: 3875.53, source: "biquote (MT5)",
+                                  market_state: "open", stale: false, quote_age_s: 1 } };
+  const { els } = await boot({ read: open });
+  els.go.onclick();
+  await new Promise(r => setTimeout(r, 0));
+  assert.doesNotMatch(els.out.innerHTML, /السوق مقفل/);
+  assert.doesNotMatch(els.out.innerHTML, /سعر قديم/);
+});
+
 test("the card renders all six targets, each labelled with its source", async () => {
   // The user asked for six targets. Each rung must say whether it sits on a real
   // pivot or is a volatility projection -- calling both "target" would report an
