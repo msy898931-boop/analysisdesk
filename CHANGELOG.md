@@ -3,6 +3,27 @@
 Notable changes, newest first. Versions are semantic; the current one is the
 `version` in `pyproject.toml`, which is also what `/api/status` reports.
 
+## 1.2.0
+
+### Added — the spot quote can now say it is not live
+
+- **biquote (MT5) is the first spot source.** It is preferred not because it is
+  newer but because it *states the market's own verdict*: every tick carries
+  `marketState`, `stale` and `quoteAgeSeconds`. A closed market returns HTTP 200
+  with the last known price, and this source tells us that, instead of leaving
+  the card to present a Friday-evening price as Sunday's. `SpotOut` carries
+  `market_state`, `stale`, `quote_age_s` and `quoted_at`; the card shows
+  "market closed — last price" rather than a live-looking number.
+- Chain is now **biquote → Swissquote → gold-api**. One upstream outage degrades,
+  never fails; if all three fail the card says so and shows no substitute.
+- Two fields on this feed are traps and are ignored: `last` and `volume` are
+  **always 0** (broker CFD pricing has no consolidated tape). The price is `mid`.
+- Licence is a real constraint: biquote forbids redistributing the raw feed
+  through a public API. Our `spot` field shows one quote for display, not the
+  feed. Written permission was requested; see `docs/SOURCES.md` and
+  `docs/EMAIL-biquote-permission.md`. If declined, the chain falls back to
+  Swissquote and biquote is removed — one entry in `BIQUOTE_SYMBOLS`.
+
 ## 1.1.0
 
 The hardening pass at the top is the newest work; the feature work below it

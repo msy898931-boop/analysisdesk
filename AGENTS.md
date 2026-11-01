@@ -66,6 +66,16 @@ python -m uvicorn app.main:app --port 12000
   `gh api repos/.../commits/<sha>/check-runs` then `.../check-runs/<id>/annotations`.
 - **The `CodeQL` check-run is not the `codeql` job.** The job builds the
   database; the check-run is the default setup's verdict. Read the check-run.
+- **biquote's `last` and `volume` are always 0.** Broker CFD pricing has no
+  consolidated tape, so those two fields carry nothing, on every symbol,
+  forever. The spot price is `mid` (or `(bid+ask)/2`). Never compute from
+  `last`/`volume`, and never present a biquote price without its `stale` /
+  `marketState` — the feed says a closed market is closed, and dropping that is
+  the exact "unknown as known" failure this project exists to refuse.
+- **biquote forbids redistributing the raw feed via a public API.** Showing one
+  `spot` quote for display is the permitted "inside your product" case; a
+  pass-through OHLC endpoint is not. See `docs/SOURCES.md` before extending its
+  use (e.g. charting from its OHLC).
 
 ## Environment variables
 

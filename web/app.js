@@ -17,6 +17,7 @@ const T = {
       sig:"إشارة",agree:"توافق",model:"الموديل",det:"تفسير محسوب",failed:"تعذّر قراءة السوق",
       instrument:"الأداة",spot:"السبوت",futures:"عقد آجل",basis:"الفرق عن السبوت",chart_src:"مصدر الشموع",
       anchor:"الإرساء على السبوت",anchor_na:"غير مُرسّى",
+      spot_closed:"السوق مقفل — آخر سعر",spot_stale:"سعر قديم",
       targets:"الأهداف الستة (خروج تدريجي)",tp_short:"هدف",src:"المصدر",
       lvl:"مستوى ارتكاز",proj:"امتداد تقلّب"},
   en:{title:"AnalysisDesk",tagline:"Transparent technical analysis on real market data",go:"Analyze",pitch:"Pitch",
@@ -33,6 +34,7 @@ const T = {
       sig:"Signal",agree:"Agreement",model:"Model",det:"Computed explanation",failed:"Could not read the market",
       instrument:"Instrument",spot:"Spot",futures:"Futures",basis:"Basis vs spot",chart_src:"Candle source",
       anchor:"Anchored to spot",anchor_na:"Not anchored",
+      spot_closed:"Market closed — last price",spot_stale:"stale quote",
       targets:"Six targets (scale out)",tp_short:"Target",src:"Source",
       lvl:"Pivot level",proj:"Volatility projection"},
 };
@@ -202,6 +204,13 @@ function paint(d){
   if (d.spot && d.spot.price) {
     prov += `<span>${t.spot} ${esc(d.spot.metal)}: <b>${fmt(d.spot.price)}</b>`
           + (d.spot.source ? ` <i>${esc(d.spot.source)}</i>` : "") + `</span>`;
+    // The source states whether this is a live quote or the last one before the
+    // market closed. Showing a closed-market price as "live" is the exact claim
+    // this desk exists to refuse -- so name it, and grey the change.
+    if (d.spot.stale === true || d.spot.market_state === "closed") {
+      const why = d.spot.market_state === "closed" ? t.spot_closed : t.spot_stale;
+      prov += `<span class="provmiss">${why}</span>`;
+    }
     if (d.anchor && d.anchor.ok) {
       // The charted token was rescaled onto this quote, so the levels above are
       // the broker's, not the token's. Name the shift: a silent rescale would be

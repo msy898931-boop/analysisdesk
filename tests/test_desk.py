@@ -1625,41 +1625,87 @@ def test_spot_series_refuses_too_little_history(monkeypatch):
 
 # ---- fetch_spot (the broker quote beside the chart) ----
 
-def test_fetch_spot_prefers_swissquote():
+def _biquote_tick(mid=4002.3, **over):
+    base = {"symbol": "XAUUSD", "bid": 4002.1, "ask": 4002.5, "mid": mid,
+            "last": 0.0, "volume": 0, "timestamp": "2026-01-01T00:00:00Z",
+            "marketState": "open", "stale": False, "quoteAgeSeconds": 2}
+    base.update(over)
+    return base
+
+
+def test_biquote_quote_reads_mid_and_carries_the_honesty_fields():
+    q = market._biquote_quote(_biquote_tick(stale=True, marketState="closed", quoteAgeSeconds=999))
+    assert q["price"] == 4002.3
+    assert q["market_state"] == "closed" and q["stale"] is True and q["quote_age_s"] == 999
+
+
+def test_biquote_quote_ignores_last_and_volume_which_are_always_zero():
+    q = market._biquote_quote(_biquote_tick(mid=4100.0, last=0.0, volume=0))
+    assert q["price"] == 4100.0  # from mid, never from last
+
+
+def test_biquote_quote_rejects_a_missing_or_nonpositive_mid():
+    assert market._biquote_quote({}) is None
+    assert market._biquote_quote({"mid": 0}) is None
+    assert market._biquote_quote({"mid": -1}) is None
+    assert market._biquote_quote({"mid": None}) is None
+    assert market._biquote_quote([1, 2]) is None
+
+
+def test_fetch_spot_prefers_biquote_and_names_it():
+    import asyncio
+
+    out = asyncio.run(_fetch_spot_with(_Client(_Resp(200, _biquote_tick(mid=4002.3)))))
+    assert out["source"] == "biquote (MT5)" and out["price"] == 4002.3
+    assert out["market_state"] == "open" and out["stale"] is False
+
+
+def test_fetch_spot_falls_back_to_swissquote_when_biquote_fails():
     import asyncio
 
     payload = [{"spreadProfilePrices": [{"spreadProfile": "premium", "bid": 4002.1, "ask": 4002.4}]}]
-    out = asyncio.run(_fetch_spot_with(_Client(_Resp(200, payload))))
+    out = asyncio.run(_fetch_spot_with(_Client(_Resp(503, None), _Resp(200, payload))))
     assert out["source"] == "Swissquote" and out["price"] == 4002.25
 
 
-def test_fetch_spot_falls_back_to_gold_api():
+def test_fetch_spot_falls_back_to_gold_api_when_both_brokers_fail():
     import asyncio
 
     body = {"name": "Gold", "price": 4001.5, "currency": "USD", "updatedAt": "2026-01-01"}
-    out = asyncio.run(_fetch_spot_with(_Client(_Resp(503, None), _Resp(200, body))))
+    out = asyncio.run(_fetch_spot_with(
+        _Client(_Resp(503, None), _Resp(500, None), _Resp(200, body))))
     assert out["source"] == "gold-api" and out["price"] == 4001.5
 
 
-def test_fetch_spot_reports_both_sources_failing():
+def test_fetch_spot_skips_biquote_when_its_mid_is_unusable():
+    import asyncio
+
+    # A 200 with no usable mid must not win; the chain falls through to Swissquote.
+    payload = [{"spreadProfilePrices": [{"spreadProfile": "premium", "bid": 4002.1, "ask": 4002.4}]}]
+    out = asyncio.run(_fetch_spot_with(
+        _Client(_Resp(200, {"mid": 0}), _Resp(200, payload))))
+    assert out["source"] == "Swissquote"
+
+
+def test_fetch_spot_reports_every_source_failing():
     import asyncio
 
     try:
-        asyncio.run(_fetch_spot_with(_Client(_Resp(503, None), _Resp(500, None))))
-        raise AssertionError("both failing should raise")
+        asyncio.run(_fetch_spot_with(_Client(_Resp(503, None), _Resp(500, None), _Resp(500, None))))
+        raise AssertionError("all failing should raise")
     except market.MarketDataError as exc:
-        assert "Swissquote" in str(exc) and "gold-api" in str(exc)
+        assert "biquote" in str(exc) and "Swissquote" in str(exc) and "gold-api" in str(exc)
 
 
-def test_fetch_spot_survives_an_exception_on_either_source():
+def test_fetch_spot_survives_an_exception_on_any_source():
     import asyncio
 
     try:
         asyncio.run(_fetch_spot_with(_Client(market.httpx.ConnectError("a"),
-                                             ValueError("b"))))
+                                             ValueError("b"), ValueError("c"))))
         raise AssertionError("exceptions should be collected and raise")
     except market.MarketDataError as exc:
-        assert "Swissquote" in str(exc)
+        assert "biquote" in str(exc) and "Swissquote" in str(exc)
 
 
 def test_fetch_spot_rejects_an_unknown_metal():
@@ -3738,7 +3784,7 @@ def test_the_version_falls_back_to_pyproject_when_uninstalled(monkeypatch):
         raise PackageNotFoundError("analysisdesk")
 
     monkeypatch.setattr(main, "_dist_version", missing)
-    assert main._version() == "1.1.0"
+    assert main._version() == "1.2.0"
 
 
 def test_the_image_carries_pyproject_for_the_version(monkeypatch):

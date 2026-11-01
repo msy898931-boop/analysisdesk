@@ -94,6 +94,13 @@ class SpotOut(BaseModel):
     price: float | None = None
     source: str | None = None
     error: str | None = None
+    # Carried through from biquote, which states the market's own verdict. Absent
+    # on the Swissquote/gold-api paths, which do not report it -- so these are
+    # None there rather than a guessed "open".
+    market_state: str | None = None
+    stale: bool | None = None
+    quote_age_s: int | None = None
+    quoted_at: str | None = None
 
 
 class AnchorOut(BaseModel):
