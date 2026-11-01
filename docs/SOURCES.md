@@ -48,6 +48,8 @@ Two fields are traps and are never used: `last` and `volume` are **always 0**
 on this feed (broker CFD pricing has no consolidated tape). The price is `mid`.
 
 **Action taken.** Because the boundary is a judgement call, written permission
-was requested from the biquote team (see `docs/EMAIL-biquote-permission.md`).
-If they decline, the chain falls back to Swissquote and biquote is removed —
-the code path is one entry in `BIQUOTE_SYMBOLS`.
+was requested from the biquote team — the ready-to-send email is
+`docs/EMAIL-biquote-permission.md` (to `support@biquote.io`, cc the author's
+address on their terms page). If they decline, the chain falls back to
+Swissquote and biquote is removed — the code path is one entry in
+`BIQUOTE_SYMBOLS`.
