@@ -92,6 +92,12 @@ def _telegram_send(chat_id: str, text: str) -> bool:
         return False
 
 
+def send_message(chat_id: str, text: str) -> bool:
+    """Public name for the one sender. The bot replies through the same path the
+    alert delivery uses, so there is a single place that knows the token."""
+    return _telegram_send(chat_id, text)
+
+
 def evaluate(subs: list[dict], prices: dict[str, tuple[float, float]]) -> list[dict]:
     """Pure: which subscriptions fired, given (prev, cur) per symbol.
 

@@ -76,6 +76,23 @@ python -m uvicorn app.main:app --port 12000
   `spot` quote for display is the permitted "inside your product" case; a
   pass-through OHLC endpoint is not. See `docs/SOURCES.md` before extending its
   use (e.g. charting from its OHLC).
+- **An in-process timer sleeps with the host.** Render Free suspends a service
+  after ~15 minutes with no *inbound* request; an outbound long poll (Telegram's
+  `getUpdates`) is **not** inbound traffic, so `SCHEDULER_ENABLED` does not keep
+  the service awake and its clock freezes with it. This is why `scheduler.py`
+  records a heartbeat and why `state()["note"]` calls itself best-effort. Do not
+  describe it as a 24/7 schedule; the supported way is a Render Cron Job on
+  `scripts/run_alerts.py`.
+- **A background task must never take the web process down.** Both
+  `bot.poll_forever` and `scheduler.run_forever` catch their own exceptions and
+  continue; they are cancelled on shutdown via the app lifespan. A new task
+  added there must follow the same rule, and must be gated on its own env var —
+  the default deploy starts no background work at all.
+- **A bot allowlist is not the token.** `TELEGRAM_BOT_TOKEN` is a credential,
+  not a permission; the set of chats the bot will answer is
+  `TELEGRAM_ALLOWED_CHATS` (falling back to `TELEGRAM_CHAT_ID`), and empty means
+  it answers nobody. Fail closed: never treat "a token is set" as "anyone may
+  command it".
 
 ## Environment variables
 
@@ -88,6 +105,10 @@ python -m uvicorn app.main:app --port 12000
 | `DESK_TRUST_PROXY` | unset | **off by default**: trust the last `X-Forwarded-For` hop only when a proxy we control appends it. Render's blueprint sets it. Requires `--no-proxy-headers` so uvicorn cannot rewrite the peer from the same header |
 | `ALERTS_TOKEN` | unset | credential for `/api/alerts*` (`x-alerts-token`). **Unset ⇒ 503 (closed), not open.** A chat id is an identifier, not a secret |
 | `ALERTS_ENABLED` | unset | turns on Telegram *delivery* of fired alerts |
+| `BOT_ENABLED` | unset | turns on the Telegram command receiver (`getUpdates` long poll). Needs `TELEGRAM_BOT_TOKEN` **and** an allowlist, else it stays shut |
+| `TELEGRAM_ALLOWED_CHATS` | unset | comma-separated chat ids the bot answers; falls back to `TELEGRAM_CHAT_ID`. **Empty ⇒ answers nobody (fail closed)** |
+| `SCHEDULER_ENABLED` | unset | turns on the in-process clock calling `alerts.run_once()`. **Best-effort on a host that sleeps** — an outbound poll is not inbound traffic, so Render Free freezes the timer too |
+| `SCHEDULER_PERIOD_S` | `300` | seconds between passes; clamped to ≥30 so a typo cannot spin a tight loop |
 | `DESK_DATA_DIR` | `data/` | where the SQLite store lives; point it at a mounted disk to survive a redeploy |
 
 **Two credentials, two jobs, deliberately separate.** `DESK_API_KEY` gates the

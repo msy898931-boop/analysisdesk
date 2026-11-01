@@ -1,9 +1,10 @@
 # Email to request written permission — biquote (option أ)
 
-The owner sends this. It is kept in the repo so the outcome is on record: if
-permission is granted, the reply settles the licence question in
-`docs/SOURCES.md`; if refused, the biquote entry is removed from
-`BIQUOTE_SYMBOLS`.
+**Status: NOT SENT.** The owner chose to proceed on biquote's terms as written
+(see the "Decision" note in `docs/SOURCES.md`) rather than request written
+permission, so this draft was prepared and deliberately left unsent. It is kept
+so the option is one copy-paste away if the owner ever wants the assurance, and
+so the record shows the choice was made, not forgotten.
 
 **To:** `support@biquote.io` — **cc:** `halitcandogan@gmail.com`
 (the author's address, linked from `biquote.io/terms.html`; the free tier has
@@ -49,6 +50,6 @@ https://github.com/msy898931-boop/analysisdesk
 
 ## Status
 
-- [ ] Sent
-- [ ] Reply received
-- Outcome: _pending_
+- [ ] Sent — **no, by decision**
+- [ ] Reply received — n/a
+- Outcome: _proceeding on the terms as written_

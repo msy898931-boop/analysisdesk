@@ -43,3 +43,17 @@ services:
       # Set it in the dashboard when you deploy one.
       - key: ALERTS_TOKEN
         sync: false
+      # The Telegram command receiver, off unless set in the dashboard. It needs
+      # TELEGRAM_BOT_TOKEN too, and an allowlist, or it stays shut.
+      - key: BOT_ENABLED
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_CHATS
+        sync: false
+      # The in-process clock. HONEST LIMIT: Render Free sleeps after ~15 idle
+      # minutes and an in-process timer sleeps with it, so this is best-effort,
+      # not a 24/7 schedule. For a real one, use a Render Cron Job pointed at
+      # `python scripts/run_alerts.py` -- that is the supported way.
+      - key: SCHEDULER_ENABLED
+        sync: false
