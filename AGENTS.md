@@ -55,6 +55,37 @@ python -m uvicorn app.main:app --port 12000
 - **`web/app.js` is external for a reason.** Inline `<script>` and inline
   `onclick` are what CSP `script-src 'self'` forbids. Keep handlers bound in
   the JS file.
+- **`ruff check` is what CI enforces, not `ruff format --check`.** Several files
+  on `main` are not format-clean by choice; running the formatter rewraps ~1000
+  lines and buries the real diff. Use `ruff check --fix` only.
+- **CodeQL flags `assert` on a call with a side effect** (`py/side-effect-in-assert`):
+  under `python -O` the assert is stripped and the call never runs. Bind the
+  response first (`r = c.post(...)`), then `assert r.status_code == ...`. It
+  flags POST/DELETE, not GET. The code-scanning alerts API is 403 for this
+  token; read the finding from the check-run annotations instead:
+  `gh api repos/.../commits/<sha>/check-runs` then `.../check-runs/<id>/annotations`.
+- **The `CodeQL` check-run is not the `codeql` job.** The job builds the
+  database; the check-run is the default setup's verdict. Read the check-run.
+
+## Environment variables
+
+| var | default | what it does |
+|---|---|---|
+| `GROQ_API_KEY` | — | the AI narrator's key; no key ⇒ computed sentence, never a fake one |
+| `ANALYSIS_MODELS` | built-in list | comma-separated model chain, tried in order |
+| `RATE_LIMIT_PER_MIN` | `60` | per-identity request cap; per-process, in-memory |
+| `DESK_API_KEY` | unset | when set, **every** caller must send `x-api-key` — no page exemption |
+| `DESK_TRUST_PROXY` | unset | **off by default**: trust the last `X-Forwarded-For` hop only when a proxy we control appends it. Render's blueprint sets it. Requires `--no-proxy-headers` so uvicorn cannot rewrite the peer from the same header |
+| `ALERTS_TOKEN` | unset | credential for `/api/alerts*` (`x-alerts-token`). **Unset ⇒ 503 (closed), not open.** A chat id is an identifier, not a secret |
+| `ALERTS_ENABLED` | unset | turns on Telegram *delivery* of fired alerts |
+| `DESK_DATA_DIR` | `data/` | where the SQLite store lives; point it at a mounted disk to survive a redeploy |
+
+**Two credentials, two jobs, deliberately separate.** `DESK_API_KEY` gates the
+read API (left unset in production so the public page stays open);
+`ALERTS_TOKEN` gates the service-to-service alerts API. Coupling them would
+force a choice between closing the page and leaving alerts open. Both fail
+closed. `/api/status` reports `api_key_required` and `alerts_configured` so a
+client can tell "closed" from "wrong credential".
 
 ## Style
 
