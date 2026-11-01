@@ -3,6 +3,39 @@
 Notable changes, newest first. Versions are semantic; the current one is the
 `version` in `pyproject.toml`, which is also what `/api/status` reports.
 
+## 1.3.0
+
+### Added — the alert loop has a bot and a clock, and says what it cannot promise
+
+- **A Telegram command receiver** (`app/bot.py`, off by default via
+  `BOT_ENABLED`). You can arm a level from the chat — `/alert XAUUSD 4000 BUY
+  1h`, `/list`, `/remove`, `/status` — instead of through the service-to-service
+  API that wanted a shared token. Parsing and dispatch are pure, so the logic is
+  tested without a network. The only thing that talks to Telegram is
+  `poll_forever`, and it never raises out of its task: a broken poll must not
+  take the web process down.
+- **Fail closed.** The bot answers only chats in `TELEGRAM_ALLOWED_CHATS` (or
+  `TELEGRAM_CHAT_ID`). A token is a credential, not a permission, so the
+  allowlist is its own decision; with it empty the bot answers nobody.
+- **An in-process clock** (`app/scheduler.py`, off by default via
+  `SCHEDULER_ENABLED`) that calls `alerts.run_once()` every `SCHEDULER_PERIOD_S`.
+  It records a **heartbeat**, so a clock that stopped shows up on `/api/status`
+  as a growing age rather than reading as "all clear".
+- **The clock is honest about its own limit.** Render Free suspends a service
+  after ~15 minutes with no *inbound* request; an outbound poll is not inbound
+  traffic, so an in-process timer freezes with the host. `scheduler.state()["note"]`
+  says so in the API, and README/AGENTS repeat it: this is best-effort, not a
+  24/7 schedule. For a real one, point a Render Cron Job at
+  `scripts/run_alerts.py`.
+- `/api/status` gains `bot` and `scheduler` blocks (typed in `schemas.py`), both
+  carrying their heartbeat and the honest note.
+
+### Changed
+
+- `alerts.send_message()` is the one public sender; the bot replies through the
+  same path the alert delivery uses, so there is a single place that knows the
+  token.
+
 ## 1.2.0
 
 ### Added — the spot quote can now say it is not live
@@ -20,9 +53,11 @@ Notable changes, newest first. Versions are semantic; the current one is the
   **always 0** (broker CFD pricing has no consolidated tape). The price is `mid`.
 - Licence is a real constraint: biquote forbids redistributing the raw feed
   through a public API. Our `spot` field shows one quote for display, not the
-  feed. Written permission was requested; see `docs/SOURCES.md` and
-  `docs/EMAIL-biquote-permission.md`. If declined, the chain falls back to
-  Swissquote and biquote is removed — one entry in `BIQUOTE_SYMBOLS`.
+  feed. The owner chose to proceed on the terms as written (personal,
+  non-commercial, no users); a ready-to-send permission email exists but was
+  **not sent**. See `docs/SOURCES.md` for the decision and
+  `docs/EMAIL-biquote-permission.md` for the draft. If the terms change, the
+  chain falls back to Swissquote — one entry in `BIQUOTE_SYMBOLS`.
 
 ## 1.1.0
 

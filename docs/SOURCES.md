@@ -47,9 +47,17 @@ is the "inside your product" case. We do **not** use biquote for the candles.
 Two fields are traps and are never used: `last` and `volume` are **always 0**
 on this feed (broker CFD pricing has no consolidated tape). The price is `mid`.
 
-**Action taken.** Because the boundary is a judgement call, written permission
-was requested from the biquote team — the ready-to-send email is
-`docs/EMAIL-biquote-permission.md` (to `support@biquote.io`, cc the author's
-address on their terms page). If they decline, the chain falls back to
-Swissquote and biquote is removed — the code path is one entry in
-`BIQUOTE_SYMBOLS`.
+**Decision, and what it rests on.** The boundary above is a judgement call, so
+the options were: ask for written permission, or proceed on the terms as
+written. **The owner chose to proceed on the terms** — this app is personal,
+non-commercial, and has no users, so the "inside your product" reading is the
+one that applies, and the risk of being wrong is bounded. A ready-to-send
+permission email exists at `docs/EMAIL-biquote-permission.md` but **has not been
+sent**; if the owner ever wants the written assurance, that file is the way to
+get it.
+
+This is a decision, not a default: it is recorded here so that anyone reading
+the code later knows *why* biquote is used without a written reply, rather than
+assuming one was obtained. If biquote ever changes its terms, or the app grows
+users, revisit this — and the fallback is one entry: remove biquote from
+`BIQUOTE_SYMBOLS` and the chain uses Swissquote.

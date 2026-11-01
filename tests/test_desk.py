@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import ai, alerts, backtest, indicators, main, market, news, signals
+from app import ai, alerts, backtest, bot, indicators, main, market, news, signals
 from app.indicators import _clean as ind_clean
 from app.main import app
 
@@ -3776,6 +3776,7 @@ def test_the_version_falls_back_to_pyproject_when_uninstalled(monkeypatch):
     metadata is absent there. The version must still resolve -- from the same
     pyproject.toml the metadata would have been built from -- rather than
     degrade to a placeholder on the deployed image."""
+    import tomllib
     from importlib.metadata import PackageNotFoundError
 
     from app import main
@@ -3784,7 +3785,12 @@ def test_the_version_falls_back_to_pyproject_when_uninstalled(monkeypatch):
         raise PackageNotFoundError("analysisdesk")
 
     monkeypatch.setattr(main, "_dist_version", missing)
-    assert main._version() == "1.2.0"
+    # Read the expected value from the one source, rather than pinning the
+    # literal here -- a pinned copy is a second home for the version and drifts
+    # on the next bump, which is the exact failure this test exists to catch.
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    expected = tomllib.loads(pyproject.read_text("utf-8"))["project"]["version"]
+    assert main._version() == expected
 
 
 def test_the_image_carries_pyproject_for_the_version(monkeypatch):
@@ -3851,3 +3857,303 @@ def test_a_missing_spot_quote_omits_the_price_not_null_it(monkeypatch):
     c = _wire(monkeypatch, _series("GC=F", kind="FUTURE"), spot_error="upstream 503")
     body = c.get("/api/analyze?symbol=GC=F&interval=1h").json()
     assert body["spot"]["error"] and "price" not in body["spot"]
+
+
+# ============================== the bot and the clock (Telegram receiver +
+# the in-process scheduler). Both are off by default and both carry a heartbeat
+# so a stopped one is visible; these pin the defaults, the allowlist gate, the
+# pure parsing, and the honesty of the status surface.
+
+def _bot_env(monkeypatch, *, enabled=True, with_token=True, allowed="42"):
+    import importlib
+
+    from app import bot as b
+
+    if enabled:
+        monkeypatch.setenv("BOT_ENABLED", "1")
+    else:
+        monkeypatch.delenv("BOT_ENABLED", raising=False)
+    if with_token:
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    else:
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    if allowed:
+        monkeypatch.setenv("TELEGRAM_ALLOWED_CHATS", allowed)
+    else:
+        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    importlib.reload(b)
+    return b
+
+
+def test_bot_is_off_by_default(monkeypatch):
+    """A receiver that answers strangers is a side effect nobody asked for."""
+    b = _bot_env(monkeypatch, enabled=False, with_token=False, allowed="")
+    assert b.bot_enabled() is False
+    assert b.ready() is False
+
+
+def test_bot_needs_all_three_parts(monkeypatch):
+    """Enabled + token + an allowlist. Missing any one, it stays shut."""
+    b = _bot_env(monkeypatch, enabled=True, with_token=True, allowed="42")
+    assert b.ready() is True
+    b = _bot_env(monkeypatch, enabled=True, with_token=False, allowed="42")
+    assert b.ready() is False
+    b = _bot_env(monkeypatch, enabled=True, with_token=True, allowed="")
+    assert b.ready() is False
+
+
+def test_bot_allowlist_falls_back_to_the_single_chat_id(monkeypatch):
+    import importlib
+
+    from app import bot as b
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHATS", "")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "99")
+    importlib.reload(b)
+    assert b.allowed_chats() == {"99"}
+
+
+def test_bot_refuses_a_chat_that_is_not_allowed(monkeypatch):
+    """Fail closed: an unknown chat is refused and touches nothing."""
+    b = _bot_env(monkeypatch, allowed="42")
+    reply = b.handle_command("999", "/alert XAUUSD 4000")
+    assert "مخصّص لمالكه" in reply
+
+
+def test_bot_parses_a_command_and_strips_the_group_suffix():
+    """`/alert@MyBot` must work the same as `/alert`, or a group silently breaks."""
+    assert bot.parse_command("/alert@AnalysisDeskBot XAUUSD 4000 BUY") == ("alert", ["XAUUSD", "4000", "BUY"])
+    assert bot.parse_command("/help") == ("help", [])
+    assert bot.parse_command("") == ("", [])
+    assert bot.parse_command("   ") == ("", [])
+
+
+def test_bot_help_and_unknown_commands(monkeypatch):
+    b = _bot_env(monkeypatch, allowed="42")
+    assert "/alert" in b.handle_command("42", "/help")
+    assert "/alert" in b.handle_command("42", "/start")
+    assert "غير معروف" in b.handle_command("42", "/nonsense")
+
+
+def test_bot_arms_a_valid_alert(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    s.init()
+    b = _bot_env(monkeypatch, allowed="42")
+    monkeypatch.setattr(b, "store", s)
+    reply = b.handle_command("42", "/alert xauusd 4000 buy 1h")
+    assert "تم" in reply and "XAUUSD" in reply
+    assert len(s.list_subscriptions("42")) == 1
+
+
+def test_bot_rejects_a_bad_symbol_interval_and_price(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    s.init()
+    b = _bot_env(monkeypatch, allowed="42")
+    monkeypatch.setattr(b, "store", s)
+    assert "غير مدعوم" in b.handle_command("42", "/alert ../etc/passwd 4000")
+    assert "إطار غير مدعوم" in b.handle_command("42", "/alert XAUUSD 4000 BUY 7m")
+    assert "رقماً" in b.handle_command("42", "/alert XAUUSD abc")
+    assert "موجباً" in b.handle_command("42", "/alert XAUUSD -5")
+    assert s.list_subscriptions("42") == []
+
+
+def test_bot_lists_and_removes_only_its_own(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    import importlib
+
+    from app import store as s
+
+    importlib.reload(s)
+    s.init()
+    b = _bot_env(monkeypatch, allowed="42,7")
+    monkeypatch.setattr(b, "store", s)
+    sid = s.add_subscription("42", "XAUUSD", "1h", "BUY", 4000.0)
+    assert f"#{sid}" in b.handle_command("42", "/list")
+    # A different allowed chat cannot remove it.
+    assert "ما في تنبيه" in b.handle_command("7", f"/remove {sid}")
+    assert len(s.list_subscriptions("42")) == 1
+    assert "انحذف" in b.handle_command("42", f"/remove {sid}")
+    assert s.list_subscriptions("42") == []
+
+
+def test_bot_drain_advances_offset_past_textless_updates():
+    """A non-text update still moves the offset, or Telegram replays it forever."""
+    payload = {"result": [{"update_id": 10, "message": {"chat": {"id": 42}, "text": "/help"}},
+                          {"update_id": 11, "message": {"chat": {"id": 42}}},
+                          {"update_id": 12, "edited_message": {"chat": {"id": 42}, "text": "/help"}}]}
+    offset, replies = bot.drain(payload, 0)
+    assert offset == 13
+    assert len(replies) == 1 and replies[0][0] == "42"
+
+
+def test_bot_state_exposes_a_heartbeat_not_chat_ids(monkeypatch):
+    b = _bot_env(monkeypatch, allowed="42,7")
+    st = b.state()
+    assert st["allowed_chats"] == 2  # a count, not the ids
+    assert st["last_poll_s_ago"] is None  # never polled yet: a real "no", not 0
+    assert "42" not in json.dumps(st)
+
+
+def test_bot_reply_notes_a_stopped_scheduler(tmp_path, monkeypatch):
+    """Arming an alert when nothing checks the price must say so."""
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    import importlib
+
+    from app import scheduler as sch
+    from app import store as s
+
+    importlib.reload(s)
+    importlib.reload(sch)
+    s.init()
+    b = _bot_env(monkeypatch, allowed="42")
+    monkeypatch.setattr(b, "store", s)
+    monkeypatch.setattr(b, "scheduler", sch)
+    reply = b.handle_command("42", "/alert XAUUSD 4000")
+    assert "المجدول موقّف" in reply
+
+
+# ---------------------------------------------------------------- scheduler
+
+def test_scheduler_is_off_by_default(monkeypatch):
+    import importlib
+
+    from app import scheduler as sch
+
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    importlib.reload(sch)
+    assert sch.scheduler_enabled() is False
+    for on in ("1", "true", "YES", "on"):
+        monkeypatch.setenv("SCHEDULER_ENABLED", on)
+        assert sch.scheduler_enabled() is True
+
+
+def test_scheduler_period_is_clamped(monkeypatch):
+    import importlib
+
+    from app import scheduler as sch
+
+    monkeypatch.setenv("SCHEDULER_PERIOD_S", "1")
+    importlib.reload(sch)
+    assert sch.period_s() == sch._MIN_PERIOD_S  # a typo cannot spin a tight loop
+    monkeypatch.setenv("SCHEDULER_PERIOD_S", "not-a-number")
+    importlib.reload(sch)
+    assert sch.period_s() == sch._DEFAULT_PERIOD_S
+
+
+def test_scheduler_state_states_the_clock_is_best_effort(monkeypatch):
+    """An in-process clock on a sleeping host must not read as a guarantee."""
+    import importlib
+
+    from app import scheduler as sch
+
+    monkeypatch.setenv("SCHEDULER_ENABLED", "1")
+    importlib.reload(sch)
+    st = sch.state()
+    assert st["enabled"] is True
+    assert st["last_run_s_ago"] is None  # never ran: a real "no", not 0
+    assert "best-effort" in st["note"] or "awake" in st["note"]
+
+
+def test_scheduler_run_forever_records_a_heartbeat(monkeypatch):
+    """One pass records the run; the loop is cancelled so the test ends."""
+    import importlib
+
+    from app import scheduler as sch
+
+    monkeypatch.setenv("SCHEDULER_ENABLED", "1")
+    importlib.reload(sch)
+    calls = []
+
+    async def fake_run_once(**kw):
+        calls.append(1)
+        return {"checked": 0, "fired": 0, "delivered": 0, "delivery_on": False}
+
+    monkeypatch.setattr(sch.alerts, "run_once", fake_run_once)
+
+    async def drive():
+        task = asyncio.create_task(sch.run_forever())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if sch.state()["runs"] >= 1:
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    import contextlib
+
+    asyncio.run(drive())
+    assert sch.state()["runs"] == 1
+    assert sch.state()["last_run_s_ago"] is not None
+    assert calls
+
+
+def test_scheduler_survives_a_failing_pass(monkeypatch):
+    """A bad pass must not kill the clock -- it records and continues."""
+    import importlib
+
+    from app import scheduler as sch
+
+    monkeypatch.setenv("SCHEDULER_ENABLED", "1")
+    importlib.reload(sch)
+    seen = []
+
+    async def boom(**kw):
+        seen.append(1)
+        raise RuntimeError("upstream down")
+
+    monkeypatch.setattr(sch.alerts, "run_once", boom)
+    monkeypatch.setattr(sch.errors, "record", lambda *a, **k: None)
+
+    async def drive():
+        task = asyncio.create_task(sch.run_forever())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if seen:
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    import contextlib
+
+    asyncio.run(drive())
+    assert seen  # it tried; the exception did not escape the loop
+
+
+def test_status_exposes_bot_and_scheduler(tmp_path, monkeypatch):
+    monkeypatch.setenv("DESK_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    monkeypatch.delenv("BOT_ENABLED", raising=False)
+    body = TestClient(main.app).get("/api/status").json()
+    assert body["bot"]["enabled"] is False
+    assert body["bot"]["ready"] is False
+    assert body["scheduler"]["enabled"] is False
+    assert "note" in body["scheduler"]
+
+
+def test_lifespan_starts_no_task_when_both_are_off(monkeypatch):
+    """The default deploy must start no background work at all."""
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    monkeypatch.delenv("BOT_ENABLED", raising=False)
+    import importlib
+
+    from app import bot as b
+    from app import scheduler as sch
+
+    importlib.reload(b)
+    importlib.reload(sch)
+    assert sch.scheduler_enabled() is False
+    assert b.ready() is False

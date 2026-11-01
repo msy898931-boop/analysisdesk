@@ -46,6 +46,28 @@ class StoreInfo(BaseModel):
     visits: int
 
 
+class BotInfo(BaseModel):
+    # The Telegram command receiver. `ready` is the gate the lifespan uses; the
+    # allowlist count is exposed so "off" is distinguishable from "on with
+    # nobody allowed", which are different faults with the same symptom.
+    enabled: bool
+    ready: bool
+    allowed_chats: int
+    last_poll_s_ago: float | None
+    note: str
+
+
+class SchedulerInfo(BaseModel):
+    # The in-process clock. `last_run_s_ago` is the tell: a number that keeps
+    # growing means the clock stopped (the host slept), not that all is well.
+    enabled: bool
+    period_s: int
+    runs: int
+    last_run_s_ago: float | None
+    last_summary: dict[str, Any] | None
+    note: str
+
+
 class StatusOut(BaseModel):
     status: str
     version: str
@@ -62,6 +84,8 @@ class StatusOut(BaseModel):
     tracked_clients: int
     errors: ErrorInfo
     store: StoreInfo
+    bot: BotInfo
+    scheduler: SchedulerInfo
 
 
 class SymbolOut(BaseModel):

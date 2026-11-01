@@ -18,6 +18,8 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hmac
 import itertools
 import os
@@ -33,7 +35,20 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, alerts, backtest, errors, indicators, market, news, schemas, signals, store
+from . import (
+    ai,
+    alerts,
+    backtest,
+    bot,
+    errors,
+    indicators,
+    market,
+    news,
+    scheduler,
+    schemas,
+    signals,
+    store,
+)
 
 load_dotenv()
 
@@ -66,11 +81,42 @@ def _version() -> str:
 # served. The machine-readable schema at /openapi.json is kept: it is plain JSON,
 # no CDN, no CSP carve-out, and it is what a client generates code from. The API
 # is also described in prose in README.md.
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the two background tasks, if they are wanted, and stop them cleanly.
+
+    Both are **off by default** and each is gated on its own env var, because
+    each is a real-world side effect: the bot answers messages, the clock sends
+    them. A missing gate would mean a deploy starts doing work the operator did
+    not ask for. The tasks are held here and cancelled on shutdown so a reload
+    does not leave a poller running against the old process.
+
+    Neither task is allowed to take the web process down: both swallow their own
+    exceptions (see bot.poll_forever, scheduler.run_forever).
+    """
+    tasks: list[asyncio.Task] = []
+    if scheduler.scheduler_enabled():
+        tasks.append(asyncio.create_task(scheduler.run_forever(), name="scheduler"))
+    if bot.ready():
+        tasks.append(asyncio.create_task(bot.poll_forever(), name="bot"))
+    try:
+        yield
+    finally:
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+
+
 app = FastAPI(
     title="AnalysisDesk",
     version=_version(),
     docs_url=None,
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 # Open the durable store once at import. Failure is not fatal: the desk serves
@@ -353,6 +399,12 @@ async def status():
         # rather than implied -- a restart keeping your alerts is not the same
         # promise as a redeploy keeping them.
         "store": store.stats(),
+        # The two background tasks. Both are off by default; when on, their
+        # heartbeats are here so a stopped clock or a dead poll is visible as a
+        # growing age, not read as an all-clear. `scheduler.note` states the
+        # best-effort nature of an in-process clock on a host that sleeps.
+        "bot": bot.state(),
+        "scheduler": scheduler.state(),
     }
 
 
